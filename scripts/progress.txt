@@ -12,6 +12,8 @@
 - The *business* dispatch gate lives in `stromboli.worker.Worker(notion, *, build=None)` — separate from the HTTP secret check. `worker.dispatch(page_id)` returns a `DispatchOutcome` (StrEnum: CLAIMED/NOT_READY/NOT_AGENT/WRONG_STATUS/ALREADY_CLAIMED/BUSY); only `CLAIMED` runs the build. Pure guard logic is `evaluate_guard(task)` (claimed-status short-circuits to ALREADY_CLAIMED first → idempotency, then Ready→Agent→To do). Claim writes `Status=Working on` BEFORE the build so a re-dispatch is a no-op. Serial worker uses a non-blocking `threading.Lock` — a dispatch while a build runs returns `BUSY` (rejected, not queued). Worker depends on a `TaskGateway` Protocol (get_task/update_task), so inject a fake in tests rather than the real `NotionTaskClient`. To wire into the API later: `create_app(..., process_task=worker.dispatch)`.
 - Prefer `enum.StrEnum` over `class X(str, Enum)` — ruff `UP042` flags the latter (Python 3.12 target).
 - For thread/concurrency tests use `threading.Event` handshakes (start + release) with `timeout=2` waits; never `sleep`. Inject a build fn that blocks on the release event to hold the lock deterministically.
+- For anything that shells out (git, CC CLI), inject a runner callable (`GitRunner = Callable[[Sequence[str]], None]`) defaulting to a real `subprocess` shell. Tests pass a recording/failing fake and assert the derived argv + ordering, never touching network/disk. `stromboli.worktree.WorktreeManager(workspace_root, *, run=None, token=None, base_branch="main")` is the template. Use `tmp_path` for the workspace root; create `<clone>/.git` to exercise the fetch-vs-clone branch.
+- Worktree lifecycle uses a `@contextmanager` that does cleanup in `finally`, so removal runs on both success and exception — test cleanup-on-error by raising inside the `with` and asserting the `worktree remove` argv was still recorded.
 
 ---
 # Ralph Progress Log
@@ -78,4 +80,19 @@
   - The serial lock is non-blocking (reject-with-BUSY), not a queue — simplest serial-worker semantics and deterministically testable. If a real queue is wanted later, swap the `acquire(blocking=False)` here.
   - `update_task` is called with `status=` only (sentinel defaults leave PR/Cost/Tokens untouched) — the claim must not clobber other fields.
   - Wire into the API in a later story via `create_app(..., process_task=worker.dispatch)`; `dispatch`'s return value is ignored by the `Callable[[str], None]` signature, which is fine.
+---
+
+## 2026-06-23 - US-005
+- Added `stromboli.worktree`: per-task isolated git worktree manager.
+  - Pure name derivation: `slugify(text)` (lowercase/hyphenate/strip/truncate to 50, ""for symbol-only), `derive_branch_name(task_id, name)` -> deterministic `stromboli/<task-id>-<slug>` (falls back to `stromboli/<task-id>` when no usable slug), `clone_url(repo, token=None)` (HTTPS, embeds `x-access-token:<token>` when given).
+  - `WorktreeManager(workspace_root, *, run=None, token=None, base_branch="main")`: `ensure_clone(repo)` clones to `<root>/<owner>/<repo>` on first use else `git fetch origin <base>`; `worktree(repo, task_id, name)` is a `@contextmanager` yielding a `Worktree(path, branch, repo, clone_path)`, adding `git worktree add -b <branch> <path> origin/<base>` and removing it (`worktree remove --force`, rmtree fallback) in `finally` — cleanup on success AND error.
+  - `GitError` raised by the default subprocess runner on non-zero exit; git is injected as `run` so all command derivation + cleanup is unit-tested with no network/disk.
+- Exported worktree symbols from `stromboli/__init__.py`.
+- Files changed: src/stromboli/worktree.py (new), tests/test_worktree.py (new), src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 63 tests pass; ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote 14 worktree tests first; confirmed ModuleNotFoundError before implementing. Cover slug edge cases, branch determinism, clone-vs-fetch selection, token URL, worktree add argv (-b/origin/main/path), removal on normal exit, removal+propagation on error, and the rmtree fallback when `git worktree remove` fails.
+  - The `Repo` (owner/repo) is resolved upstream via `NotionTaskClient.get_project_repo`; US-005 takes an already-resolved `Repo`, so US-007's pipeline does the Notion lookup then hands the Repo here.
+  - `_run_git` uses `subprocess.run(..., capture_output=True)` with a `# noqa: S603` marker (harmless; S not in ruff select) — keep the injected-runner seam so US-007 can drive `claude -p` the same way.
+  - Worktree path is `<root>/worktrees/<owner>/<repo>/<task-id>-<slug>`, distinct from the clone at `<root>/<owner>/<repo>` — a worktree must live outside its clone's working tree.
 ---

@@ -56,7 +56,7 @@
       "block": "C",
       "blockName": "Execution",
       "description": "Prepare an isolated git worktree per task: resolve owner/repo from Project.Repo, ensure a local clone under WORKSPACE_ROOT and fetch latest main, create a fresh worktree on a deterministically-named branch (e.g. stromboli/<task-id>-<slug>), and remove/clean up the worktree on completion or failure. Unit/integration tests verify branch-name derivation and cleanup on error. Tests pass; typecheck and lint pass.",
-      "passes": false,
+      "passes": true,
       "attempts": 1,
       "blocked": false,
       "blockReason": ""
