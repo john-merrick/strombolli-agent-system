@@ -8,6 +8,7 @@
 - HTTP clients use `httpx`; inject an `httpx.Client` (e.g. with `httpx.MockTransport`) for tests instead of monkeypatching network. Keep parsing as pure functions (`parse_task`/`parse_repo`) separate from the HTTP shell so field extraction is unit-testable against raw Notion payload dicts.
 - Notion Status writes MUST use exact existing option labels (`stromboli.notion.STATUS_*`: "To do"/"Working on"/"Review"/"Complete"); validate against `VALID_STATUSES` before sending — the Notion API does not auto-create `status` options.
 - Notion property names live as `PROP_*` constants in `stromboli/notion.py`; reuse them rather than hardcoding strings.
+- FastAPI app is built via `stromboli.api.create_app(*, dispatch_secret, process_task=None)` — a factory, not a module-level `app`. Inject the build entrypoint (`process_task: Callable[[str], None]`) so the HTTP layer is unit-testable with a recording stub; later stories wire the real worker here. Test with `fastapi.testclient.TestClient` (runs `BackgroundTasks` after the response — assert side effects post-request). Shared secret is checked via a `Depends(require_secret)` reading the `X-Stromboli-Secret` header (constant `SECRET_HEADER`) with `secrets.compare_digest`; 401 on missing/invalid. `fastapi` is a runtime dep (`uv add fastapi`).
 
 ---
 # Ralph Progress Log
@@ -40,4 +41,22 @@
   - `update_task` uses an `_Unset` sentinel so callers can distinguish "don't touch this field" from "set it to None/0" — important because Cost/Tokens can legitimately be 0.
   - Status options are NOT auto-created by Notion's API (unlike `select`), so an unknown status name would 400; `update_task` raises `ValueError` up front instead.
   - `parse_repo` regex accepts URL/SSH/`.git`/bare forms; extend it there if more repo-spec shapes appear (US-005 consumes `get_project_repo`).
+---
+
+## 2026-06-23 - US-003
+- Added `stromboli.api` FastAPI dispatch surface:
+  - `create_app(*, dispatch_secret, process_task=None)` factory returning a `FastAPI` app.
+  - `GET /healthz` -> `200 {"status": "ok"}`.
+  - `POST /stromboli/dispatch` with body `{page_id}`: validates `X-Stromboli-Secret` via a `Depends` guard (401 missing/invalid, constant-time `secrets.compare_digest`), returns `202 {"status":"accepted","page_id":...}`, and schedules `process_task(page_id)` as a FastAPI `BackgroundTasks` job so the caller is not blocked.
+  - `process_task` is injectable; default is a no-op placeholder (real build wiring lands in US-004+).
+- Documented the dispatch API, Cloudflare Tunnel `ingress` mapping, and the Notion "Ready checked" automation webhook contract in README.
+- Exported `create_app`, `SECRET_HEADER`, `DispatchRequest`, `DispatchResponse` from `stromboli/__init__.py`.
+- Added `fastapi` runtime dep (resolved 0.138.0, pulls starlette).
+- Files changed: src/stromboli/api.py (new), tests/test_api.py (new), src/stromboli/__init__.py, README.md, pyproject.toml, uv.lock, scripts/prd.json, scripts/progress.txt.
+- Quality: 38 tests pass; ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote the 6 API tests first and confirmed they failed on the missing module before implementing.
+  - The dispatch guard here is only the *shared-secret* check (transport auth). The business claim guard (Ready/Assigned to/Status==To do, idempotent claim, serial lock) is US-004 and belongs in `process_task`/the worker, NOT the HTTP layer — re-validate there.
+  - `TestClient` emits a benign `StarletteDeprecationWarning` (httpx vs httpx2); harmless, not an error.
+  - When wiring production startup, call `create_app(dispatch_secret=settings.dispatch_shared_secret, process_task=<real worker>)`.
 ---

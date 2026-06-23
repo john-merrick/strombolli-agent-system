@@ -36,7 +36,7 @@
       "block": "B",
       "blockName": "Trigger",
       "description": "Create a FastAPI app with POST /stromboli/dispatch that accepts a JSON body containing the task page ID, requires a shared-secret header (401 if missing/invalid), returns 202 immediately and processes the build asynchronously; add GET /healthz returning 200; document the Cloudflare Tunnel mapping and the Notion 'Ready checked' automation trigger contract in README. Unit tests: invalid secret -> 401, valid request -> 202. Tests pass; typecheck and lint pass.",
-      "passes": false,
+      "passes": true,
       "attempts": 1,
       "blocked": false,
       "blockReason": ""
