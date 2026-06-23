@@ -96,3 +96,19 @@
   - `_run_git` uses `subprocess.run(..., capture_output=True)` with a `# noqa: S603` marker (harmless; S not in ruff select) — keep the injected-runner seam so US-007 can drive `claude -p` the same way.
   - Worktree path is `<root>/worktrees/<owner>/<repo>/<task-id>-<slug>`, distinct from the clone at `<root>/<owner>/<repo>` — a worktree must live outside its clone's working tree.
 ---
+
+## 2026-06-23 - US-006
+- Added `stromboli.prd`: compiles a task Spec into a Ralph `{meta, items}` prd.json for the worktree.
+  - `parse_acceptance_criteria(spec)` (pure): prefers markdown list items (`-`/`*`/`+`/`1.`/`1)`), preserving order; scopes to an "Acceptance Criteria" heading section when present (stops at the next heading); falls back to non-blank, non-heading lines when no list markers exist; `""` -> `[]`.
+  - `build_prd(task, *, branch, max_attempts=3)` -> dict: one item per criterion with `passes:false/attempts:0/blocked:false/blockReason:""` plus `id`/`block`/`blockName`; `meta` carries `project`, `branchName` (the US-005 worktree branch, verbatim), and `maxAttempts`. Raises `ValueError` when the Spec yields no criteria (a task with nothing to build must not dispatch).
+  - `write_prd(worktree_root, prd)` -> Path: writes JSON to `<root>/scripts/prd.json` (`PRD_RELATIVE_PATH`), creating parents.
+- Exported `build_prd`, `parse_acceptance_criteria`, `write_prd` from `stromboli/__init__.py`.
+- Files changed: src/stromboli/prd.py (new), tests/test_prd.py (new), src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 79 tests pass (16 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote 16 tests first; confirmed ModuleNotFoundError before implementing. The core acceptance claim (`N criteria -> N well-formed items`) is parametrised over N=1,3,5 and asserts each item's exact fields, not just the count.
+  - Item ids are `AC-001`, `AC-002`, ... (zero-padded, list order = priority order for the Ralph selector). Generated items include `block`/`blockName` (`AC`/`Acceptance Criteria`) so the in-worktree `audit` rundown groups them.
+  - `meta.branchName` MUST equal the US-005 branch (`derive_branch_name(task.page_id, task.name)`); US-007's pipeline derives the branch once and threads the SAME string into both the worktree add and here, so the loop commits onto the prepared branch.
+  - The generated prd.json is for the TARGET worktree (`<worktree>/scripts/prd.json`), distinct from this repo's own `scripts/prd.json`. US-007 calls `build_prd` then `write_prd(worktree.path, prd)` after `WorktreeManager.worktree(...)` yields.
+  - Spec format is lenient by design (bullets OR plain lines) since Notion rich_text Specs vary; the "Acceptance Criteria" heading scoping lets a spec carry an overview/notes without polluting the item list.
+---
