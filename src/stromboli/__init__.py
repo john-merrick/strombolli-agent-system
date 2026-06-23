@@ -31,8 +31,9 @@ from stromboli.prd import (
     parse_acceptance_criteria,
     write_prd,
 )
+from stromboli.routing import RouteOutcome, decide_route, route_task
 from stromboli.settings import MissingSettingsError, Settings, load_settings
-from stromboli.worker import ASSIGNEE_AGENT, DispatchOutcome, Worker
+from stromboli.worker import ASSIGNEE_AGENT, ASSIGNEE_HUMAN, DispatchOutcome, Worker
 from stromboli.worktree import (
     GitError,
     Worktree,
@@ -44,6 +45,7 @@ from stromboli.worktree import (
 
 __all__ = [
     "ASSIGNEE_AGENT",
+    "ASSIGNEE_HUMAN",
     "COMPLETION_SIGNAL",
     "SECRET_HEADER",
     "BreakerConfig",
@@ -63,6 +65,7 @@ __all__ = [
     "PullRequest",
     "RalphLoop",
     "Repo",
+    "RouteOutcome",
     "Settings",
     "StopReason",
     "Task",
@@ -73,6 +76,7 @@ __all__ = [
     "build_prd",
     "clone_url",
     "create_app",
+    "decide_route",
     "derive_branch_name",
     "derive_pr_body",
     "derive_pr_title",
@@ -81,6 +85,7 @@ __all__ = [
     "load_settings",
     "parse_acceptance_criteria",
     "publish_pr",
+    "route_task",
     "slugify",
     "write_prd",
 ]

@@ -116,8 +116,8 @@
       "block": "D",
       "blockName": "Verify & Integrate",
       "description": "Implement integration routing per the autonomy table: if Needs review==true set Status=Review; if Needs review==false set Status=Complete after the PR is opened (human merges in v1, no auto-merge); Assigned to==Human tasks are never picked up or modified. Unit test covers all three routing branches. Tests pass; typecheck and lint pass.",
-      "passes": false,
-      "attempts": 0,
+      "passes": true,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },

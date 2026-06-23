@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 #: The ``Assigned to`` value that marks a task as the agent's to build.
 ASSIGNEE_AGENT: Final = "Agent"
 
+#: The ``Assigned to`` value marking a task as a human's — never built or
+#: modified by the worker (US-011 routing).
+ASSIGNEE_HUMAN: Final = "Human"
+
 #: Statuses meaning the task has already been claimed — re-dispatch is a no-op.
 _CLAIMED_STATUSES: Final[frozenset[str]] = frozenset(
     {STATUS_WORKING, STATUS_REVIEW, STATUS_COMPLETE}
@@ -147,6 +151,7 @@ class Worker:
 
 __all__ = [
     "ASSIGNEE_AGENT",
+    "ASSIGNEE_HUMAN",
     "BuildFn",
     "DispatchOutcome",
     "Worker",

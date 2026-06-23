@@ -171,3 +171,17 @@
   - SEAM for US-011/US-012: `publish_pr` deliberately does NOT set the final Status. The empty-diff→Review routing and the success Review-vs-Complete decision live in US-011 (`route_task`); the explanatory note + feedback summary live in US-012's resilient write-back. `PublishResult.empty_diff`/`pr_url` are the inputs those consume.
   - GitHubClient mirrors NotionTaskClient: Bearer token + pinned API version header, inject `httpx.Client` for tests, parse the JSON in a thin shell. `GitHubGateway` Protocol lets the orchestration take a fake.
 ---
+
+## 2026-06-23 - US-011
+- Added `stromboli.routing`: the single decision point for a finished build's final Status.
+  - `decide_route(task, publish) -> RouteOutcome` (PURE): Human-assigned → SKIPPED_HUMAN (checked FIRST, never touched); empty diff → REVIEW; `needs_review` → REVIEW; else COMPLETE.
+  - `route_task(notion, task, publish)` applies it — writes STATUS_REVIEW/STATUS_COMPLETE, and is a strict no-op (zero Notion writes) for a Human task.
+  - Added `ASSIGNEE_HUMAN = "Human"` constant to `stromboli.worker` (next to ASSIGNEE_AGENT).
+- Files changed: src/stromboli/routing.py (new), tests/test_routing.py (new), src/stromboli/worker.py, src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 121 tests pass (7 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first. All three autonomy-table branches asserted on the pure `decide_route` AND on `route_task`'s Notion effect; the Human branch additionally asserts `notion.writes == 0` (never modified, not just status-unchanged).
+  - Routing consumes US-010's `PublishResult` (empty_diff/pr_url). The empty-diff→Review rule lives HERE, not in pr.py — pr.py just reports the empty diff. Keep status decisions in routing; keep PR mechanics in pr.py.
+  - Order matters in `decide_route`: Human check precedes everything so a Human task is never read for needs_review/empty_diff. The worker guard (US-004) already blocks Human tasks at dispatch, but routing re-checks defensively for the autonomy contract.
+  - The breaker-trip path (US-008 `handle_trip`) routes to Review independently; route_task is the SUCCESS/empty-diff path. The pipeline (US-012/composition) calls one or the other, never both, so there's no double status write.
+---
