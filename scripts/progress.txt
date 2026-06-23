@@ -143,3 +143,15 @@
   - Langfuse tracing of the trip is deferred to US-013 (the trip is logged via `logger.warning` here). US-013 will tag the trace at the pipeline-composition level rather than inside `handle_trip`, keeping breaker.py free of the langfuse dependency.
   - `handle_trip`/US-011/US-012 all touch Status+body; the breaker path (Review) is the trip-specific case. US-012's resilient write-back should wrap the append so a Notion failure is retried without crashing.
 ---
+
+## 2026-06-23 - US-009
+- Added `.github/workflows/ci.yml`: a reusable verification workflow triggered on BOTH `pull_request` (gates this repo's PRs) and `workflow_call` (a target repo reuses it via `uses: snarktank/stromboli/.github/workflows/ci.yml@main`). One `verify` job: checkout → setup-uv → `uv python install 3.12` → `uv sync --extra dev` → `uv run pytest -q` → `uv run ruff check .` → `uv run mypy`. Any failing step fails the check (no `continue-on-error`).
+- Documented target-repo opt-in in README ("CI verification workflow" section) with the thin caller-workflow snippet; noted CodeQL + eval suite are deferred.
+- Added `pyyaml` + `types-pyyaml` as dev deps so the workflow YAML can be parsed and structurally validated in tests.
+- Files changed: .github/workflows/ci.yml (new), tests/test_ci_workflow.py (new), README.md, pyproject.toml, uv.lock, scripts/prd.json, scripts/progress.txt.
+- Quality: 106 tests pass (4 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first (4 failing on the missing file). The workflow file IS the artifact, so the test parses it with PyYAML and asserts structure: valid YAML, `pull_request` + `workflow_call` triggers, and that pytest/ruff/mypy + actions/checkout appear across the jobs' `run`/`uses` steps.
+  - GOTCHA: PyYAML (YAML 1.1) parses the bare `on:` key as the boolean `True`, not the string `"on"`. Tests read `workflow.get("on", workflow.get(True))` and `_load()` returns `dict[Any, Any]` (not `dict[str, Any]`) so mypy --strict accepts the bool-key lookup. If you ever need to key workflow YAML by `on`, remember it's `True`.
+  - `actions/checkout@v4`, `astral-sh/setup-uv@v5` are the pinned action majors used; bump them in lockstep if the loop upgrades CI.
+---

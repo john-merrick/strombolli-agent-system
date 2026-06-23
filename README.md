@@ -83,3 +83,24 @@ The worker re-reads the task and re-validates the dispatch guard
 (`Ready == true AND Assigned to == Agent AND Status == To do`) before building,
 so the automation only needs to fire the webhook — claim safety lives in the
 worker (see the dispatch guard story).
+
+## CI verification workflow
+
+Every PR the worker opens is gated on the same checks the project enforces
+locally: tests, lint, and type checks. The reusable workflow lives at
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). It runs on this repo's
+own pull requests and is also exposed as a reusable workflow (`workflow_call`),
+so a target repo can opt in with a thin caller workflow:
+
+```yaml
+# .github/workflows/stromboli-ci.yml in the TARGET repo
+name: CI
+on: pull_request
+jobs:
+  verify:
+    uses: snarktank/stromboli/.github/workflows/ci.yml@main
+```
+
+The check **fails the PR** when any of tests, lint, or types fail, so the worker
+never lands a red branch. CodeQL and the spec eval suite are explicitly deferred
+to phase 2 (see Non-Goals).

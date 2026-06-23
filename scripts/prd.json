@@ -96,8 +96,8 @@
       "block": "D",
       "blockName": "Verify & Integrate",
       "description": "Add a reusable GitHub Actions workflow that runs on pull_request to install deps and run tests, lint, and type checks, failing the check when any fail; wire it into the target repo so it runs on the worker's branch; document in README how a new target repo opts in. CodeQL and the eval suite are explicitly deferred. Workflow YAML validates; typecheck and lint pass.",
-      "passes": false,
-      "attempts": 0,
+      "passes": true,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },

@@ -1,0 +1,34 @@
+name: CI
+
+# Reusable verification workflow. It runs directly on this repo's pull requests
+# AND is callable by a target repo (`workflow_call`) so every branch the
+# Stromboli worker opens a PR for is gated on the same tests, lint, and types.
+on:
+  pull_request:
+  workflow_call:
+
+jobs:
+  verify:
+    name: tests · lint · types
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy
