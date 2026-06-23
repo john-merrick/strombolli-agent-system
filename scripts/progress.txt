@@ -128,3 +128,18 @@
   - Ceiling vs no-eligible ordering: the eligibility check is at the TOP of each pass, so after the last iteration flips everything to pass, the next pass returns NO_ELIGIBLE (not CEILING) — the loop reports the *real* reason it ended. A stub that never flips items + never signals exercises the pure ceiling path.
   - CC is invoked via an injected `CCRunner = Callable[[Sequence[str], Path], str]` (argv, cwd) -> stdout, mirroring worktree's `GitRunner` seam — same `# noqa: S603` on the default subprocess shell-out. Never touch a real `claude` in tests.
   - `total_cost_usd` is captured per iteration now (US-007 only needs to *capture* JSON) so US-008's circuit breaker can sum cost across iterations and US-013 can put it on a Langfuse trace without re-running anything.
+
+## 2026-06-23 - US-008
+- Added `stromboli.breaker`: per-task circuit breaker bounding a build by cost + iteration ceilings.
+  - `BreakerConfig(max_iterations, max_cost_usd)` (both validated > 0); `CircuitBreaker.record_iteration(cost_usd)` accumulates and returns a `BreakerTrip | None` the instant a ceiling is crossed. Cost checked before iterations so a same-iteration double-cross reports COST (more actionable). `None` cost = 0.
+  - `BreakerTrip(reason, iterations, total_cost_usd, limit)` with a `.note` markdown property; `TripReason` StrEnum (COST/ITERATIONS). `handle_trip(notion, page_id, trip)` routes Status=Review + appends the note (status write first so the task parks even if the append fails).
+- Integrated into `stromboli.loop.RalphLoop(..., breaker=None)`: consulted AFTER the COMPLETE check (a finished build beats a trip), records `iteration.cost_usd`, stops with new `StopReason.BREAKER` and surfaces the trip on `LoopResult.trip` (+ `.tripped` prop). `LoopResult.trip` defaults to None so US-007 constructions are unchanged.
+- Exported breaker symbols from `stromboli/__init__.py`.
+- Files changed: src/stromboli/breaker.py (new), tests/test_breaker.py (new), src/stromboli/loop.py, src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 102 tests pass (9 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first; confirmed ModuleNotFoundError before implementing. The core acceptance (simulated cost over ceiling trips + routes to Review with a note) is an end-to-end test driving the real `RalphLoop` with a never-completing CC stub that reports `total_cost_usd` each turn — proving the loop stops on `StopReason.BREAKER` then `handle_trip` sets Review.
+  - The breaker is a PURE accumulator (no I/O); the side effects (`handle_trip`) are a separate function taking a `TaskGateway` Protocol (update_task/append_task_body) — same inject-a-fake pattern as the worker. Keep the decision logic I/O-free so trips are asserted directly.
+  - Langfuse tracing of the trip is deferred to US-013 (the trip is logged via `logger.warning` here). US-013 will tag the trace at the pipeline-composition level rather than inside `handle_trip`, keeping breaker.py free of the langfuse dependency.
+  - `handle_trip`/US-011/US-012 all touch Status+body; the breaker path (Review) is the trip-specific case. US-012's resilient write-back should wrap the append so a Notion failure is retried without crashing.
+---

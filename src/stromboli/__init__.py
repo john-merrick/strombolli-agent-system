@@ -1,6 +1,13 @@
 """Stromboli — agentic coding-triage worker."""
 
 from stromboli.api import SECRET_HEADER, DispatchRequest, DispatchResponse, create_app
+from stromboli.breaker import (
+    BreakerConfig,
+    BreakerTrip,
+    CircuitBreaker,
+    TripReason,
+    handle_trip,
+)
 from stromboli.loop import (
     COMPLETION_SIGNAL,
     CCInvocationError,
@@ -31,7 +38,10 @@ __all__ = [
     "ASSIGNEE_AGENT",
     "COMPLETION_SIGNAL",
     "SECRET_HEADER",
+    "BreakerConfig",
+    "BreakerTrip",
     "CCInvocationError",
+    "CircuitBreaker",
     "DispatchOutcome",
     "DispatchRequest",
     "DispatchResponse",
@@ -45,6 +55,7 @@ __all__ = [
     "Settings",
     "StopReason",
     "Task",
+    "TripReason",
     "Worker",
     "Worktree",
     "WorktreeManager",
@@ -52,6 +63,7 @@ __all__ = [
     "clone_url",
     "create_app",
     "derive_branch_name",
+    "handle_trip",
     "has_eligible_items",
     "load_settings",
     "parse_acceptance_criteria",

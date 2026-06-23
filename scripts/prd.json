@@ -86,8 +86,8 @@
       "block": "C",
       "blockName": "Execution",
       "description": "Add a circuit breaker with configurable max-iterations and max-cost (USD) ceilings per task: on trip, stop the loop, set Status=Review, append a note explaining the trip to the task body, and log/trace the reason in Langfuse. Unit test: simulated cost over the ceiling trips the breaker and routes to Review (assert resulting status and note). Tests pass; typecheck and lint pass.",
-      "passes": false,
-      "attempts": 0,
+      "passes": true,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },

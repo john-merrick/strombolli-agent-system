@@ -32,6 +32,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final
 
+from stromboli.breaker import BreakerTrip, CircuitBreaker
 from stromboli.prd import PRD_RELATIVE_PATH
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ CLAUDE_MD_RELATIVE_PATH: Final = Path("CLAUDE.md")
 #: Where the loop's progress artifact lives, relative to the worktree root.
 PROGRESS_RELATIVE_PATH: Final = Path("scripts/progress.txt")
 #: Default ceiling on iterations per task build, independent of per-item K.
-DEFAULT_MAX_ITERATIONS: Final = 25
+DEFAULT_MAX_ITERATIONS: Final = 10
 
 #: Fallback prompt when the worktree has no ``CLAUDE.md`` of its own.
 _FALLBACK_PROMPT: Final = (
@@ -70,6 +71,8 @@ class StopReason(StrEnum):
     NO_ELIGIBLE = "no_eligible_item"
     #: The iteration ceiling was reached with work still outstanding.
     CEILING = "ceiling"
+    #: A circuit-breaker ceiling (cost or iterations) tripped (US-008).
+    BREAKER = "circuit_breaker"
 
 
 @dataclass(frozen=True)
@@ -98,11 +101,18 @@ class LoopResult:
     iterations: tuple[Iteration, ...]
     prd_path: Path
     progress_path: Path
+    #: The breaker trip that stopped the loop, when ``reason`` is ``BREAKER``.
+    trip: BreakerTrip | None = None
 
     @property
     def completed(self) -> bool:
         """Whether the loop ran to a clean finish (signal or empty queue)."""
         return self.reason in (StopReason.COMPLETE, StopReason.NO_ELIGIBLE)
+
+    @property
+    def tripped(self) -> bool:
+        """Whether a circuit-breaker ceiling stopped the loop."""
+        return self.reason is StopReason.BREAKER
 
     @property
     def total_cost_usd(self) -> float:
@@ -181,12 +191,14 @@ class RalphLoop:
         run: CCRunner | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         output_format: str = "json",
+        breaker: CircuitBreaker | None = None,
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be >= 1")
         self._run = run or _default_runner
         self._max_iterations = max_iterations
         self._output_format = output_format
+        self._breaker = breaker
 
     def run(self, worktree_root: str | Path) -> LoopResult:
         """Drive the Ralph loop inside ``worktree_root`` and report the outcome.
@@ -202,6 +214,7 @@ class RalphLoop:
 
         iterations: list[Iteration] = []
         reason = StopReason.CEILING
+        trip: BreakerTrip | None = None
         for index in range(1, self._max_iterations + 1):
             # Re-read the PRD each pass: the previous iteration may have flipped
             # the last item to passing/blocked, leaving nothing eligible.
@@ -220,6 +233,19 @@ class RalphLoop:
                 logger.info("Loop stopped: completion signal at iteration %d.", index)
                 reason = StopReason.COMPLETE
                 break
+
+            # A completed build is the better outcome, so the breaker is only
+            # consulted once the iteration did not finish the work.
+            if self._breaker is not None:
+                trip = self._breaker.record_iteration(iteration.cost_usd)
+                if trip is not None:
+                    logger.info(
+                        "Loop stopped: circuit breaker (%s) at iteration %d.",
+                        trip.reason.value,
+                        index,
+                    )
+                    reason = StopReason.BREAKER
+                    break
         else:
             logger.info(
                 "Loop stopped: hit the %d-iteration ceiling.", self._max_iterations
@@ -230,6 +256,7 @@ class RalphLoop:
             iterations=tuple(iterations),
             prd_path=prd_path,
             progress_path=progress_path,
+            trip=trip,
         )
 
     def _prompt(self, root: Path) -> str:
