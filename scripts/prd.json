@@ -77,7 +77,7 @@
       "blockName": "Execution",
       "description": "Run the Ralph loop in the worktree: invoke claude -p iterations with the repo's CLAUDE.md until all items pass or are blocked or a ceiling is hit, capturing per-iteration JSON output; stop on the completion signal <promise>COMPLETE</promise> or when no eligible item remains; retain progress.txt and prd.json as run artifacts. Integration test with a stubbed CC invocation verifies termination on the completion signal and on the ceiling. Tests pass; typecheck and lint pass.",
       "passes": false,
-      "attempts": 0,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },

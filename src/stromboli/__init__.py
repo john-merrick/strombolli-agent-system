@@ -1,6 +1,15 @@
 """Stromboli — agentic coding-triage worker."""
 
 from stromboli.api import SECRET_HEADER, DispatchRequest, DispatchResponse, create_app
+from stromboli.loop import (
+    COMPLETION_SIGNAL,
+    CCInvocationError,
+    Iteration,
+    LoopResult,
+    RalphLoop,
+    StopReason,
+    has_eligible_items,
+)
 from stromboli.notion import NotionTaskClient, Repo, Task
 from stromboli.prd import (
     build_prd,
@@ -20,15 +29,21 @@ from stromboli.worktree import (
 
 __all__ = [
     "ASSIGNEE_AGENT",
+    "COMPLETION_SIGNAL",
     "SECRET_HEADER",
+    "CCInvocationError",
     "DispatchOutcome",
     "DispatchRequest",
     "DispatchResponse",
     "GitError",
+    "Iteration",
+    "LoopResult",
     "MissingSettingsError",
     "NotionTaskClient",
+    "RalphLoop",
     "Repo",
     "Settings",
+    "StopReason",
     "Task",
     "Worker",
     "Worktree",
@@ -37,6 +52,7 @@ __all__ = [
     "clone_url",
     "create_app",
     "derive_branch_name",
+    "has_eligible_items",
     "load_settings",
     "parse_acceptance_criteria",
     "slugify",
