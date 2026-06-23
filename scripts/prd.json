@@ -66,7 +66,7 @@
       "block": "C",
       "blockName": "Execution",
       "description": "Convert the task Spec into a Ralph prd.json ({meta, items}) written into the worktree: set meta.maxAttempts, map each acceptance criterion to an item with passes:false/attempts:0/blocked:false, and set meta.branchName to match the US-005 worktree branch. Unit test asserts N acceptance criteria produce N well-formed items. Tests pass; typecheck and lint pass.",
-      "passes": false,
+      "passes": true,
       "attempts": 1,
       "blocked": false,
       "blockReason": ""
