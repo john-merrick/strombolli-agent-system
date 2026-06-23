@@ -199,3 +199,17 @@
   - Status is NOT set here — routing (US-011)/breaker (US-008) own Status; write-back only appends feedback on top. The pipeline orders it: set Status (route_task/handle_trip) → resilient_append(summary). Wrap the status write in the same resilience when composing if you want full durability.
   - `build_feedback_summary` takes primitives (pr_url/blocked_items/completed_count/trip), not whole result objects, so it's trivially unit-testable and reusable across the success/blocked/trip paths. The composition layer (US-013/pipeline) supplies them from LoopResult + PublishResult + read_blocked_items.
 ---
+
+## 2026-06-23 - US-013
+- Added `stromboli.observability`: a build is a Langfuse trace, each Ralph iteration a span.
+  - `BuildTracer` is a no-op base with granular verbs (start / iteration / record_totals / tag / finish); `NullTracer` is the default. `record_build_trace(tracer, task, result, *, error=None)` is the orchestrator: start → one span per `result.iterations` (cost + tokens via `_usage`) → summed totals → tag `circuit-breaker`+`trip:<reason>` on a trip and `failure` on error → finish. Wrapped in try/except so tracing NEVER fails a build.
+  - `LangfuseTracer` lazily imports `langfuse` (optional dep) and holds the client as `Any` (SDK surface varies by major version); `build_tracer(*, enabled, public_key, secret_key, host)` returns `NullTracer` when disabled, creds missing, or the package/SDK is unavailable.
+  - Added `langfuse` to `[project.optional-dependencies] observability`. Cost/Tokens write-back to Notion stays deferred (Non-Goals).
+- Files changed: src/stromboli/observability.py (new), tests/test_observability.py (new), src/stromboli/__init__.py, pyproject.toml, uv.lock, scripts/prd.json, scripts/progress.txt.
+- Quality: 132 tests pass (5 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first with a `RecordingTracer(BuildTracer)` capturing every call — driven by REAL `RalphLoop` runs (CC stub emits `total_cost_usd` + `usage.{input,output}_tokens`). Asserts span-per-iteration, summed totals, breaker-trip tags, and failure tag. No test imports langfuse.
+  - `_usage(data)` tolerates tokens under a `usage` object OR top-level; assign `raw = data.get("usage")` to a LOCAL before `isinstance` so mypy --strict narrows it (calling `.get()` twice in a ternary does NOT narrow).
+  - The langfuse client is typed `Any` via `importlib.import_module("langfuse")` — deliberately avoids binding mypy to one SDK version's API (`.trace()` is the v2 surface; langfuse v3 differs). When wiring live, verify the method names against the deployed SDK; the tracer degrades to no-op on any mismatch, so a wrong API name silently disables tracing rather than crashing — check Langfuse actually received traces.
+  - `record_build_trace` is post-hoc (reads a finished LoopResult), not live during the loop — simplest seam that satisfies "iterations are spans". If real-time spans are needed later, thread the tracer into `RalphLoop.run`.
+---

@@ -18,6 +18,13 @@ from stromboli.loop import (
     has_eligible_items,
 )
 from stromboli.notion import NotionTaskClient, Repo, Task
+from stromboli.observability import (
+    BuildTracer,
+    LangfuseTracer,
+    NullTracer,
+    build_tracer,
+    record_build_trace,
+)
 from stromboli.pr import (
     GitHubClient,
     PublishResult,
@@ -57,6 +64,7 @@ __all__ = [
     "BlockedItem",
     "BreakerConfig",
     "BreakerTrip",
+    "BuildTracer",
     "CCInvocationError",
     "CircuitBreaker",
     "DispatchOutcome",
@@ -65,9 +73,11 @@ __all__ = [
     "GitError",
     "GitHubClient",
     "Iteration",
+    "LangfuseTracer",
     "LoopResult",
     "MissingSettingsError",
     "NotionTaskClient",
+    "NullTracer",
     "PublishResult",
     "PullRequest",
     "RalphLoop",
@@ -82,6 +92,7 @@ __all__ = [
     "WorktreeManager",
     "build_feedback_summary",
     "build_prd",
+    "build_tracer",
     "clone_url",
     "create_app",
     "decide_route",
@@ -94,6 +105,7 @@ __all__ = [
     "parse_acceptance_criteria",
     "publish_pr",
     "read_blocked_items",
+    "record_build_trace",
     "resilient_append",
     "route_task",
     "slugify",

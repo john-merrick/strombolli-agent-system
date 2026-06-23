@@ -136,8 +136,8 @@
       "block": "E",
       "blockName": "Write-back & Observability",
       "description": "Add Langfuse observability: each task build is a trace and each Ralph iteration is a span; record cost and token usage parsed from CC output on the trace; tag circuit-breaker trips and failures. Writing Cost/Tokens back to Notion is deferred to phase 2. Tests pass; typecheck and lint pass.",
-      "passes": false,
-      "attempts": 0,
+      "passes": true,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     }
