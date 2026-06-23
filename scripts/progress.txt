@@ -1,9 +1,24 @@
 ## Codebase Patterns
 <!-- Consolidate the most important, REUSABLE learnings here (added by the loop). -->
-<!-- Keep entries general, not story-specific. Examples: -->
-<!-- - Always use `IF NOT EXISTS` for migrations -->
-<!-- - Export types from actions.ts for UI components -->
+- Python project managed with `uv`. Run checks via: `uv run pytest -q`, `uv run ruff check .`, `uv run mypy`.
+- Project code lives in `src/stromboli/` (src-layout); tests in `tests/`. `pyproject.toml` sets `pythonpath=["src"]` for pytest and `packages=["src/stromboli"]` for hatchling.
+- Ruff/mypy are configured to target `src` + `tests` only; `scripts/` (Ralph control-plane) is excluded from ruff via `extend-exclude` — never lint/typecheck the Ralph machinery.
+- Config: `stromboli.settings.Settings` (pydantic-settings BaseSettings) with `Field(alias="ENV_VAR")`. Use `load_settings(**overrides)` which wraps `ValidationError` into `MissingSettingsError` naming the missing UPPER_CASE env vars. In tests pass `load_settings(_env_file=None)` and monkeypatch env to avoid picking up a real `.env`.
+- `.env` is gitignored (added to root `.gitignore` under "Stromboli project artifacts"); `.env.example` documents every required var.
 
 ---
 # Ralph Progress Log
 <!-- The loop APPENDS one block per iteration below (never replace). -->
+
+## 2026-06-23 - US-001
+- Initialised the uv-managed Python project (src-layout) with pyproject.toml + uv.lock.
+- Added stromboli.settings.Settings (pydantic-settings) loading all 9 required env vars; load_settings() fails fast with MissingSettingsError naming missing UPPER_CASE keys.
+- Added .env.example documenting all vars; added .env (and python tooling caches) to root .gitignore.
+- Files changed: pyproject.toml, uv.lock, src/stromboli/__init__.py, src/stromboli/settings.py, src/stromboli/py.typed, tests/__init__.py, tests/test_settings.py, .env.example, .gitignore, README.md.
+- Quality: 12 tests pass; ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first (parametrised over each required var) and confirmed they exercise the fail-fast naming, not a tautology.
+  - pydantic-settings validation errors report the field's alias in `loc`; uppercased + reordered to declaration order for a stable message.
+  - `uv run ruff check .` scans the whole repo including scripts/; excluded scripts/ so pre-existing Ralph-machinery lint noise doesn't block the project gate.
+  - `uv run mypy` (no args) uses `files` from pyproject; keep new modules under src/ so they're type-checked.
+---

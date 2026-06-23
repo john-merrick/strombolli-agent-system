@@ -5,3 +5,13 @@ archive/
 .last-branch
 __pycache__/
 *.pyc
+
+# Stromboli project artifacts
+.env
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/

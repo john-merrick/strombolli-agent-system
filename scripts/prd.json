@@ -17,7 +17,7 @@
       "blockName": "Foundation",
       "description": "Initialise the Python project with uv (pyproject.toml + lockfile) and a Settings object that loads NOTION_TOKEN, GITHUB_TOKEN, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST, TUNNEL_PUBLIC_URL, WORKSPACE_ROOT, ANTHROPIC_API_KEY, DISPATCH_SHARED_SECRET from env/.env; missing required vars fail fast naming the key; .env.example documents all vars and .env is gitignored. Tests pass; typecheck and ruff lint pass.",
       "passes": false,
-      "attempts": 0,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },
