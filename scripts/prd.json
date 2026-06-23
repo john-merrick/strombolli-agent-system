@@ -27,7 +27,7 @@
       "blockName": "Foundation",
       "description": "Build a typed Notion task client: get_task(page_id) exposing Task name/Project/Status/Spec/Assigned to/Ready/Needs review/PR/Cost/Tokens; get_project_repo() resolving owner/repo; update_task() writing Status/PR/Cost/Tokens; append_task_body() appending markdown; Status writes map to the exact existing labels (To do/Working on/Review/Complete) with no API-created options. Unit tests assert parsed field values and repo resolution against a mocked Notion response. Tests pass; typecheck and lint pass.",
       "passes": false,
-      "attempts": 0,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },

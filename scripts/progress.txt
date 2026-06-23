@@ -5,6 +5,9 @@
 - Ruff/mypy are configured to target `src` + `tests` only; `scripts/` (Ralph control-plane) is excluded from ruff via `extend-exclude` — never lint/typecheck the Ralph machinery.
 - Config: `stromboli.settings.Settings` (pydantic-settings BaseSettings) with `Field(alias="ENV_VAR")`. Use `load_settings(**overrides)` which wraps `ValidationError` into `MissingSettingsError` naming the missing UPPER_CASE env vars. In tests pass `load_settings(_env_file=None)` and monkeypatch env to avoid picking up a real `.env`.
 - `.env` is gitignored (added to root `.gitignore` under "Stromboli project artifacts"); `.env.example` documents every required var.
+- HTTP clients use `httpx`; inject an `httpx.Client` (e.g. with `httpx.MockTransport`) for tests instead of monkeypatching network. Keep parsing as pure functions (`parse_task`/`parse_repo`) separate from the HTTP shell so field extraction is unit-testable against raw Notion payload dicts.
+- Notion Status writes MUST use exact existing option labels (`stromboli.notion.STATUS_*`: "To do"/"Working on"/"Review"/"Complete"); validate against `VALID_STATUSES` before sending — the Notion API does not auto-create `status` options.
+- Notion property names live as `PROP_*` constants in `stromboli/notion.py`; reuse them rather than hardcoding strings.
 
 ---
 # Ralph Progress Log
@@ -21,4 +24,20 @@
   - pydantic-settings validation errors report the field's alias in `loc`; uppercased + reordered to declaration order for a stable message.
   - `uv run ruff check .` scans the whole repo including scripts/; excluded scripts/ so pre-existing Ralph-machinery lint noise doesn't block the project gate.
   - `uv run mypy` (no args) uses `files` from pyproject; keep new modules under src/ so they're type-checked.
+---
+
+## 2026-06-23 - US-002
+- Added `stromboli.notion`: typed Notion task client.
+  - `parse_task(page)` -> `Task` extracting Task name/Project/Status/Spec/Assigned to/Ready/Needs review/PR/Cost/Tokens; degrades gracefully on empty/null fields; `Assigned to` reads either a `select` or `people` property.
+  - `parse_repo(project_page)` -> `Repo(owner, repo)` resolving owner/repo from the related Project page's `Repo` property (HTTPS URL, SSH URL, `.git` suffix, or bare `owner/repo`).
+  - `NotionTaskClient`: `get_task`, `get_project_repo` (follows Project relation), `update_task` (Status/PR/Cost/Tokens; only provided fields sent; validates Status against exact labels), `append_task_body` (markdown -> paragraph blocks).
+- Added `httpx>=0.27` runtime dep (resolved 0.28.1) via `uv add`.
+- Exported `NotionTaskClient`, `Repo`, `Task` from `stromboli/__init__.py`.
+- Files changed: src/stromboli/notion.py (new), tests/test_notion.py (new), src/stromboli/__init__.py, pyproject.toml, uv.lock, scripts/progress.txt, scripts/prd.json.
+- Quality: 32 tests pass; ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first (parsers + MockTransport request-body assertions) and confirmed they failed on missing module before implementing.
+  - `update_task` uses an `_Unset` sentinel so callers can distinguish "don't touch this field" from "set it to None/0" — important because Cost/Tokens can legitimately be 0.
+  - Status options are NOT auto-created by Notion's API (unlike `select`), so an unknown status name would 400; `update_task` raises `ValueError` up front instead.
+  - `parse_repo` regex accepts URL/SSH/`.git`/bare forms; extend it there if more repo-spec shapes appear (US-005 consumes `get_project_repo`).
 ---
