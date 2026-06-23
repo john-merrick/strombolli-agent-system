@@ -14,6 +14,7 @@
 - For thread/concurrency tests use `threading.Event` handshakes (start + release) with `timeout=2` waits; never `sleep`. Inject a build fn that blocks on the release event to hold the lock deterministically.
 - For anything that shells out (git, CC CLI), inject a runner callable (`GitRunner = Callable[[Sequence[str]], None]`) defaulting to a real `subprocess` shell. Tests pass a recording/failing fake and assert the derived argv + ordering, never touching network/disk. `stromboli.worktree.WorktreeManager(workspace_root, *, run=None, token=None, base_branch="main")` is the template. Use `tmp_path` for the workspace root; create `<clone>/.git` to exercise the fetch-vs-clone branch.
 - Worktree lifecycle uses a `@contextmanager` that does cleanup in `finally`, so removal runs on both success and exception — test cleanup-on-error by raising inside the `with` and asserting the `worktree remove` argv was still recorded.
+- The Ralph loop runner is `stromboli.loop.RalphLoop(*, run=None, max_iterations=25)`; `run(worktree_root)` drives `claude -p` once per iteration and returns an immutable `LoopResult(reason, iterations, prd_path, progress_path)`. Inject the CC runner (`CCRunner = Callable[[Sequence[str], Path], str]`, returns stdout) for tests — never shell out. Loop stops on `COMPLETION_SIGNAL` ("<promise>COMPLETE</promise>") found in the iteration result text, on `has_eligible_items(prd)` going false (re-read each pass), or at the `max_iterations` ceiling → `StopReason.{COMPLETE,NO_ELIGIBLE,CEILING}`. Eligible = `passes:false AND blocked:false` (both default false). The `-p` prompt is the worktree's own `CLAUDE.md` contents (fallback constant if absent); CC runs with cwd=worktree root. Per-iteration stdout is parsed as `--output-format json`; malformed output is tolerated (data=None, raw text still scanned for the signal). `Iteration.cost_usd` reads `total_cost_usd` for US-008/US-013.
 
 ---
 # Ralph Progress Log
@@ -112,3 +113,18 @@
   - The generated prd.json is for the TARGET worktree (`<worktree>/scripts/prd.json`), distinct from this repo's own `scripts/prd.json`. US-007 calls `build_prd` then `write_prd(worktree.path, prd)` after `WorktreeManager.worktree(...)` yields.
   - Spec format is lenient by design (bullets OR plain lines) since Notion rich_text Specs vary; the "Acceptance Criteria" heading scoping lets a spec carry an overview/notes without polluting the item list.
 ---
+
+## 2026-06-23 - US-007
+- Added `stromboli.loop`: drives the Ralph loop inside a prepared worktree.
+  - `RalphLoop(*, run=None, max_iterations=25, output_format="json").run(worktree_root)` invokes `claude -p` once per iteration with the worktree's `CLAUDE.md` as the prompt (cwd=worktree root), captures and JSON-parses each stdout, and returns an immutable `LoopResult`.
+  - Three terminating conditions → `StopReason`: `COMPLETE` (signal `<promise>COMPLETE</promise>` in result text), `NO_ELIGIBLE` (PRD has no `passes:false AND blocked:false` item — re-read each pass so a freshly-flipped last item stops the loop without another CC call), `CEILING` (max_iterations reached).
+  - `has_eligible_items(prd_path)`, `build_cc_argv(prompt)` (claude -p ... --output-format json --dangerously-skip-permissions), `_default_runner` shells out raising `CCInvocationError` on non-zero exit. `Iteration.cost_usd` reads `total_cost_usd`; `LoopResult.total_cost_usd`/`.completed` convenience props. Artifacts (`scripts/prd.json`, `scripts/progress.txt`) are pointed at on the result.
+- Exported loop symbols from `stromboli/__init__.py`.
+- Files changed: src/stromboli/loop.py (new), tests/test_loop.py (new), src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 93 tests pass (14 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote 14 tests first; confirmed ModuleNotFoundError before implementing. The two acceptance claims (termination on the completion signal, termination on the ceiling) are covered directly, plus the third real exit (no-eligible, with and without any CC call).
+  - Eligibility is re-read from disk each pass because the *agent* mutates the worktree's prd.json — the loop doesn't track item state itself. The stubbed CC in tests flips items via an `on_call` side effect to simulate this; that's the integration seam US-008/US-010 build on.
+  - Ceiling vs no-eligible ordering: the eligibility check is at the TOP of each pass, so after the last iteration flips everything to pass, the next pass returns NO_ELIGIBLE (not CEILING) — the loop reports the *real* reason it ended. A stub that never flips items + never signals exercises the pure ceiling path.
+  - CC is invoked via an injected `CCRunner = Callable[[Sequence[str], Path], str]` (argv, cwd) -> stdout, mirroring worktree's `GitRunner` seam — same `# noqa: S603` on the default subprocess shell-out. Never touch a real `claude` in tests.
+  - `total_cost_usd` is captured per iteration now (US-007 only needs to *capture* JSON) so US-008's circuit breaker can sum cost across iterations and US-013 can put it on a Langfuse trace without re-running anything.
