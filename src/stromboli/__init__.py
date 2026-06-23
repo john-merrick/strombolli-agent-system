@@ -18,6 +18,14 @@ from stromboli.loop import (
     has_eligible_items,
 )
 from stromboli.notion import NotionTaskClient, Repo, Task
+from stromboli.pr import (
+    GitHubClient,
+    PublishResult,
+    PullRequest,
+    derive_pr_body,
+    derive_pr_title,
+    publish_pr,
+)
 from stromboli.prd import (
     build_prd,
     parse_acceptance_criteria,
@@ -46,10 +54,13 @@ __all__ = [
     "DispatchRequest",
     "DispatchResponse",
     "GitError",
+    "GitHubClient",
     "Iteration",
     "LoopResult",
     "MissingSettingsError",
     "NotionTaskClient",
+    "PublishResult",
+    "PullRequest",
     "RalphLoop",
     "Repo",
     "Settings",
@@ -63,10 +74,13 @@ __all__ = [
     "clone_url",
     "create_app",
     "derive_branch_name",
+    "derive_pr_body",
+    "derive_pr_title",
     "handle_trip",
     "has_eligible_items",
     "load_settings",
     "parse_acceptance_criteria",
+    "publish_pr",
     "slugify",
     "write_prd",
 ]

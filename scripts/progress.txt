@@ -155,3 +155,19 @@
   - GOTCHA: PyYAML (YAML 1.1) parses the bare `on:` key as the boolean `True`, not the string `"on"`. Tests read `workflow.get("on", workflow.get(True))` and `_load()` returns `dict[Any, Any]` (not `dict[str, Any]`) so mypy --strict accepts the bool-key lookup. If you ever need to key workflow YAML by `on`, remember it's `True`.
   - `actions/checkout@v4`, `astral-sh/setup-uv@v5` are the pinned action majors used; bump them in lockstep if the loop upgrades CI.
 ---
+
+## 2026-06-23 - US-010
+- Added `stromboli.pr`: turns a finished worktree branch into a PR and writes it back to Notion.
+  - Pure derivation: `derive_pr_title(task)` (task name), `derive_pr_body(task)` (carries the Spec + the task page_id for traceability).
+  - `GitHubClient(token, *, client=None).open_pull_request(repo, *, head, base, title, body) -> PullRequest(url, number)` — POSTs `/repos/{full_name}/pulls`, parses `html_url`/`number`. Inject an `httpx.Client` (MockTransport + base_url) in tests.
+  - `branch_has_changes(worktree, *, base="main", run=None)` — true if `git status --porcelain` is dirty OR `git rev-list --count origin/<base>..HEAD` > 0. `commit_and_push(worktree, ...)` does `add -A`, conditional `commit`, `push -u origin <branch>`.
+  - `publish_pr(notion, github, worktree, task, *, base, run) -> PublishResult(pr_url, empty_diff)`: empty diff → NO PR opened, returns empty_diff=True (caller routes to Review); else commit/push, open PR, write `pr_url` back, return it.
+- Files changed: src/stromboli/pr.py (new), tests/test_pr.py (new), src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 114 tests pass (8 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first. The two acceptance claims (title/body derivation; empty-diff opens no PR) are covered directly, plus the success path (commit/push argv recorded, PR opened on `worktree.branch`→main, `pr_url` written to Notion).
+  - The git seam here RETURNS stdout (`GitRunner = Callable[[Sequence[str]], str]`), distinct from worktree.py's no-return `GitRunner`. Needed because `branch_has_changes` reads `status --porcelain` / `rev-list --count`. The test fake (`RecordingGit`) returns scripted output keyed on the subcommand and exposes `.ran(*tokens)` for argv assertions — reuse this shape for any read-from-git logic.
+  - `branch_has_changes` checks BOTH committed-ahead and dirty tree because the in-worktree Ralph agent commits per item — so after a normal run the working tree is clean but the branch is ahead of origin/main. Don't rely on `status --porcelain` alone to decide "did the build produce anything".
+  - SEAM for US-011/US-012: `publish_pr` deliberately does NOT set the final Status. The empty-diff→Review routing and the success Review-vs-Complete decision live in US-011 (`route_task`); the explanatory note + feedback summary live in US-012's resilient write-back. `PublishResult.empty_diff`/`pr_url` are the inputs those consume.
+  - GitHubClient mirrors NotionTaskClient: Bearer token + pinned API version header, inject `httpx.Client` for tests, parse the JSON in a thin shell. `GitHubGateway` Protocol lets the orchestration take a fake.
+---

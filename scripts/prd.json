@@ -106,8 +106,8 @@
       "block": "D",
       "blockName": "Verify & Integrate",
       "description": "After a successful loop, commit the worktree changes, push the branch, open a PR against main with a title/body derived from the task and spec, and write the PR URL to the task PR field; if no changes were produced, route to Review with an explanatory note instead of opening an empty PR. Unit test verifies PR title/body derivation and the empty-diff branch. Tests pass; typecheck and lint pass.",
-      "passes": false,
-      "attempts": 0,
+      "passes": true,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },
