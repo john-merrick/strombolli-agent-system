@@ -1,0 +1,51 @@
+{
+  "meta": {
+    "project": "MyApp",
+    "branchName": "ralph/task-priority",
+    "description": "Task Priority System - Add priority levels to tasks",
+    "maxAttempts": 3,
+    "coldPriorAttemptsPerItem": 1.5,
+    "coldPriorCostPerIteration": 0.5,
+    "v1Scope": ["US"],
+    "deferred": { "blocks": [] },
+    "upstream": { "repo": "snarktank/ralph", "pinnedCommit": "" }
+  },
+  "items": [
+    {
+      "id": "US-001",
+      "block": "US",
+      "blockName": "Task Priority",
+      "description": "Add priority column to tasks table ('high'|'medium'|'low', default 'medium'); generate and run migration; typecheck passes.",
+      "passes": true,
+      "attempts": 1,
+      "blocked": false,
+      "blockReason": ""
+    },
+    {
+      "id": "US-002",
+      "block": "US",
+      "blockName": "Task Priority",
+      "description": "Display colored priority badge (red=high, yellow=medium, gray=low) on each task card; visible without hover; typecheck passes; verify in browser.",
+      "passes": false,
+      "attempts": 0,
+      "blocked": false,
+      "blockReason": ""
+    },
+    {
+      "id": "US-003",
+      "block": "US",
+      "blockName": "Task Priority",
+      "description": "Add priority dropdown to task edit modal showing current value and saving on change; typecheck passes; verify in browser.",
+      "passes": false,
+      "attempts": 3,
+      "blocked": true,
+      "blockReason": "edit modal is a third-party component with no slot for a custom field; needs a wrapper - manual decision required"
+    },
+    {
+      "id": "US-004",
+      "block": "US",
+      "blockName": "Task Priority",
+      "description": "Add priority filter dropdown (All|High|Medium|Low) persisted in URL params with empty-state message; typecheck passes; verify in browser."
+    }
+  ]
+}

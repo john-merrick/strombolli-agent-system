@@ -1,0 +1,9 @@
+## Codebase Patterns
+<!-- Consolidate the most important, REUSABLE learnings here (added by the loop). -->
+<!-- Keep entries general, not story-specific. Examples: -->
+<!-- - Always use `IF NOT EXISTS` for migrations -->
+<!-- - Export types from actions.ts for UI components -->
+
+---
+# Ralph Progress Log
+<!-- The loop APPENDS one block per iteration below (never replace). -->
