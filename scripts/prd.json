@@ -46,7 +46,7 @@
       "block": "B",
       "blockName": "Trigger",
       "description": "Implement the dispatch guard and idempotent claim: proceed only if Ready==true AND Assigned to==Agent AND Status==To do, else log reason and exit; on valid claim set Status=Working on before any build; treat already-claimed Working on/Review/Complete as a no-op; a single in-process lock enforces one build at a time (serial worker), concurrent dispatches queue or are rejected with a logged reason. Unit tests cover guard pass, each guard-fail branch, and double-dispatch idempotency. Tests pass; typecheck and lint pass.",
-      "passes": false,
+      "passes": true,
       "attempts": 1,
       "blocked": false,
       "blockReason": ""
