@@ -213,3 +213,18 @@
   - The langfuse client is typed `Any` via `importlib.import_module("langfuse")` — deliberately avoids binding mypy to one SDK version's API (`.trace()` is the v2 surface; langfuse v3 differs). When wiring live, verify the method names against the deployed SDK; the tracer degrades to no-op on any mismatch, so a wrong API name silently disables tracing rather than crashing — check Langfuse actually received traces.
   - `record_build_trace` is post-hoc (reads a finished LoopResult), not live during the loop — simplest seam that satisfies "iterations are spans". If real-time spans are needed later, thread the tracer into `RalphLoop.run`.
 ---
+
+## 2026-06-23 - Integration: end-to-end pipeline + entrypoint (post-US-013 wiring)
+- Composed all stories into a runnable worker (not a separate PRD item — the integration the per-story seams were built for).
+  - `stromboli.pipeline.run_build(task, deps: BuildDeps)`: resolve repo → worktree (US-005) → compile+write PRD (US-006) → RalphLoop under CircuitBreaker (US-007/008) → trip? handle_trip→Review : publish_pr→route_task (US-010/011) → resilient feedback summary (US-012) → record Langfuse trace (US-013). Wrapped so one task's failure never crashes the worker; worktree always torn down by its context manager. All 7 collaborators injected via `BuildDeps` (notion/github/worktrees/breaker_config/tracer/make_loop/git_run) — fully unit-tested across all 4 terminal paths (Complete / Review-needs-review / trip→Review / empty-diff→Review) + cleanup, with NO git/network/real claude.
+  - `stromboli.app.create_stromboli_app(settings=None)`: the ONE place that builds the real graph (NotionTaskClient, GitHubClient, WorktreeManager@WORKSPACE_ROOT, Langfuse tracer) and wires `Worker(notion, build=partial(run_build, deps=deps))` into `create_app(process_task=...)`. `stromboli.__main__` runs it under uvicorn on 127.0.0.1:8000 (`python -m stromboli`).
+  - Added `uvicorn` runtime dep; documented `python -m stromboli` + the observability extra in README.
+- Files changed: src/stromboli/{pipeline,app,__main__}.py (new), tests/test_{pipeline,app}.py (new), src/stromboli/__init__.py, pyproject.toml, uv.lock, README.md, scripts/progress.txt.
+- Quality: 139 tests pass (12 new); ruff clean; mypy --strict clean. Smoke: `create_stromboli_app(load_settings(_env_file=None))` builds and exposes /healthz + /stromboli/dispatch.
+- **Learnings for future iterations:**
+  - The PR git seam is a SINGLE injected `git_run` (pr.py's stdout-returning `GitRunner`), threaded through `publish_pr(..., run=deps.git_run)`. Don't add a parallel `branch_has_changes` seam — the one git runner controls has-changes (rev-list count), commit, and push together. Test fake returns "1"/"0" for rev-list and "" for everything else.
+  - `process_task` must be a `Callable[[str], None]`; `Worker.dispatch` returns a `DispatchOutcome`, so wrap it in a void `def process_task(page_id): worker.dispatch(page_id)` — passing `worker.dispatch` directly fails mypy --strict (return-type mismatch).
+  - test_app.py does NOT exercise a valid dispatch: TestClient runs BackgroundTasks synchronously before returning, so a 202 path would run the real build and hit the network. Cover the pipeline in test_pipeline.py with fakes; cover the app with healthz + 401 only.
+  - Per-task ceilings default to max_iterations=25 / max_cost_usd=$10 in app.py (DEFAULT_MAX_*). `build_prd` is given `max_attempts=breaker_config.max_iterations` so the in-worktree PRD's K matches the build's iteration budget.
+  - 57 symbols exported from the package; keep `__all__` sorted (ruff RUF022 isn't on, but the loop has kept it alphabetical — match that).
+---

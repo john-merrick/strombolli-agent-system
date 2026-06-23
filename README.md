@@ -16,6 +16,24 @@ uv run ruff check .      # lint
 uv run mypy              # type check
 ```
 
+## Running the worker
+
+Once `.env` is populated (see Configuration), start the worker with:
+
+```bash
+uv run python -m stromboli            # serves on 127.0.0.1:8000 by default
+```
+
+Override the bind address with `STROMBOLI_HOST` / `STROMBOLI_PORT` and the log
+level with `STROMBOLI_LOG_LEVEL`. The entrypoint loads settings (failing fast on
+any missing variable), assembles the full build pipeline
+(`stromboli.app.create_stromboli_app`), and serves the dispatch API behind the
+Cloudflare Tunnel. For Langfuse tracing also install the optional extra:
+
+```bash
+uv sync --extra dev --extra observability
+```
+
 ## Configuration
 
 All configuration is loaded from environment variables, optionally backed by a
