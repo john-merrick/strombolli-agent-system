@@ -126,8 +126,8 @@
       "block": "E",
       "blockName": "Write-back & Observability",
       "description": "Write the worker outcome back to Notion: on completion (success, blocked, or breaker trip) append a feedback summary to the task body (work done, blockers and why, PR link) and set the final Status from US-011; make write-back resilient so a Notion write failure is retried and logged without crashing the worker. Unit test asserts the summary includes blocked-item reasons when present. Tests pass; typecheck and lint pass.",
-      "passes": false,
-      "attempts": 0,
+      "passes": true,
+      "attempts": 1,
       "blocked": false,
       "blockReason": ""
     },

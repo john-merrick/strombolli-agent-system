@@ -42,12 +42,19 @@ from stromboli.worktree import (
     derive_branch_name,
     slugify,
 )
+from stromboli.writeback import (
+    BlockedItem,
+    build_feedback_summary,
+    read_blocked_items,
+    resilient_append,
+)
 
 __all__ = [
     "ASSIGNEE_AGENT",
     "ASSIGNEE_HUMAN",
     "COMPLETION_SIGNAL",
     "SECRET_HEADER",
+    "BlockedItem",
     "BreakerConfig",
     "BreakerTrip",
     "CCInvocationError",
@@ -73,6 +80,7 @@ __all__ = [
     "Worker",
     "Worktree",
     "WorktreeManager",
+    "build_feedback_summary",
     "build_prd",
     "clone_url",
     "create_app",
@@ -85,6 +93,8 @@ __all__ = [
     "load_settings",
     "parse_acceptance_criteria",
     "publish_pr",
+    "read_blocked_items",
+    "resilient_append",
     "route_task",
     "slugify",
     "write_prd",

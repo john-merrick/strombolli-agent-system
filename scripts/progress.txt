@@ -185,3 +185,17 @@
   - Order matters in `decide_route`: Human check precedes everything so a Human task is never read for needs_review/empty_diff. The worker guard (US-004) already blocks Human tasks at dispatch, but routing re-checks defensively for the autonomy contract.
   - The breaker-trip path (US-008 `handle_trip`) routes to Review independently; route_task is the SUCCESS/empty-diff path. The pipeline (US-012/composition) calls one or the other, never both, so there's no double status write.
 ---
+
+## 2026-06-23 - US-012
+- Added `stromboli.writeback`: resilient outcome feedback to the Notion task body.
+  - `read_blocked_items(prd_path) -> list[BlockedItem(id, reason)]` reads the worktree PRD and extracts `blocked:true` items + their `blockReason`.
+  - `build_feedback_summary(*, pr_url, blocked_items, completed_count=0, trip=None) -> str` (PURE): markdown with completed count, PR link (or "none opened"), a breaker-trip note when present, and a "Blocked items" section listing each id + reason.
+  - `resilient_append(notion, page_id, markdown, *, retries=3, sleep=time.sleep) -> bool`: bounded exponential backoff; logs each failure; returns False (never raises) on permanent failure so a Notion outage can't crash the worker. `sleep` injected for tests.
+- Files changed: src/stromboli/writeback.py (new), tests/test_writeback.py (new), src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 127 tests pass (6 new); ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote tests first. The acceptance claim (summary includes blocked-item reasons when present) asserts BOTH the id and the exact reason string for multiple blocked items. Resilience is proven with a `FlakyNotion(fail_times=N)` that raises N times then succeeds — asserting attempt count, eventual append, and backoff-sleep count; plus a never-succeeds case asserting no raise + returns False.
+  - `resilient_append` catches broad `Exception` deliberately (`# noqa: BLE001`) — write-back must NEVER propagate. Inject `sleep` (`Callable[[float], None]`) so retry tests don't actually wait; default is `time.sleep`.
+  - Status is NOT set here — routing (US-011)/breaker (US-008) own Status; write-back only appends feedback on top. The pipeline orders it: set Status (route_task/handle_trip) → resilient_append(summary). Wrap the status write in the same resilience when composing if you want full durability.
+  - `build_feedback_summary` takes primitives (pr_url/blocked_items/completed_count/trip), not whole result objects, so it's trivially unit-testable and reusable across the success/blocked/trip paths. The composition layer (US-013/pipeline) supplies them from LoopResult + PublishResult + read_blocked_items.
+---
