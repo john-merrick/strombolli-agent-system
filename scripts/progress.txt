@@ -9,6 +9,9 @@
 - Notion Status writes MUST use exact existing option labels (`stromboli.notion.STATUS_*`: "To do"/"Working on"/"Review"/"Complete"); validate against `VALID_STATUSES` before sending — the Notion API does not auto-create `status` options.
 - Notion property names live as `PROP_*` constants in `stromboli/notion.py`; reuse them rather than hardcoding strings.
 - FastAPI app is built via `stromboli.api.create_app(*, dispatch_secret, process_task=None)` — a factory, not a module-level `app`. Inject the build entrypoint (`process_task: Callable[[str], None]`) so the HTTP layer is unit-testable with a recording stub; later stories wire the real worker here. Test with `fastapi.testclient.TestClient` (runs `BackgroundTasks` after the response — assert side effects post-request). Shared secret is checked via a `Depends(require_secret)` reading the `X-Stromboli-Secret` header (constant `SECRET_HEADER`) with `secrets.compare_digest`; 401 on missing/invalid. `fastapi` is a runtime dep (`uv add fastapi`).
+- The *business* dispatch gate lives in `stromboli.worker.Worker(notion, *, build=None)` — separate from the HTTP secret check. `worker.dispatch(page_id)` returns a `DispatchOutcome` (StrEnum: CLAIMED/NOT_READY/NOT_AGENT/WRONG_STATUS/ALREADY_CLAIMED/BUSY); only `CLAIMED` runs the build. Pure guard logic is `evaluate_guard(task)` (claimed-status short-circuits to ALREADY_CLAIMED first → idempotency, then Ready→Agent→To do). Claim writes `Status=Working on` BEFORE the build so a re-dispatch is a no-op. Serial worker uses a non-blocking `threading.Lock` — a dispatch while a build runs returns `BUSY` (rejected, not queued). Worker depends on a `TaskGateway` Protocol (get_task/update_task), so inject a fake in tests rather than the real `NotionTaskClient`. To wire into the API later: `create_app(..., process_task=worker.dispatch)`.
+- Prefer `enum.StrEnum` over `class X(str, Enum)` — ruff `UP042` flags the latter (Python 3.12 target).
+- For thread/concurrency tests use `threading.Event` handshakes (start + release) with `timeout=2` waits; never `sleep`. Inject a build fn that blocks on the release event to hold the lock deterministically.
 
 ---
 # Ralph Progress Log
@@ -59,4 +62,20 @@
   - The dispatch guard here is only the *shared-secret* check (transport auth). The business claim guard (Ready/Assigned to/Status==To do, idempotent claim, serial lock) is US-004 and belongs in `process_task`/the worker, NOT the HTTP layer — re-validate there.
   - `TestClient` emits a benign `StarletteDeprecationWarning` (httpx vs httpx2); harmless, not an error.
   - When wiring production startup, call `create_app(dispatch_secret=settings.dispatch_shared_secret, process_task=<real worker>)`.
+---
+
+## 2026-06-23 - US-004
+- Added `stromboli.worker`: the business dispatch guard, idempotent claim, and serial build lock (separate from US-003's transport secret check).
+  - `evaluate_guard(task)` (pure): ALREADY_CLAIMED short-circuit for Working on/Review/Complete (idempotency) → NOT_READY → NOT_AGENT → WRONG_STATUS → CLAIMED.
+  - `Worker(notion, *, build=None).dispatch(page_id)`: acquires a non-blocking `threading.Lock` (returns BUSY if a build is in flight), fetches the task, runs the guard, and on CLAIMED writes `Status=Working on` BEFORE invoking the injected build.
+  - `DispatchOutcome` StrEnum with a `.built` property; `ASSIGNEE_AGENT="Agent"` constant; `TaskGateway` Protocol decouples the worker from `NotionTaskClient`.
+- Exported `ASSIGNEE_AGENT`, `DispatchOutcome`, `Worker` from `stromboli/__init__.py`.
+- Files changed: src/stromboli/worker.py (new), tests/test_worker.py (new), src/stromboli/__init__.py, scripts/prd.json, scripts/progress.txt.
+- Quality: 49 tests pass; ruff clean; mypy --strict clean.
+- **Learnings for future iterations:**
+  - Wrote 12 worker tests first; confirmed ImportError before implementing. Cover guard pass, each fail branch (not ready / not agent / unassigned / wrong status), all three already-claimed statuses, double-dispatch idempotency, concurrent-rejection (BUSY), and lock-release.
+  - Claimed-status check goes FIRST in the guard so a duplicate dispatch is a clean no-op regardless of other fields; this is the idempotency guarantee.
+  - The serial lock is non-blocking (reject-with-BUSY), not a queue — simplest serial-worker semantics and deterministically testable. If a real queue is wanted later, swap the `acquire(blocking=False)` here.
+  - `update_task` is called with `status=` only (sentinel defaults leave PR/Cost/Tokens untouched) — the claim must not clobber other fields.
+  - Wire into the API in a later story via `create_app(..., process_task=worker.dispatch)`; `dispatch`'s return value is ignored by the `Callable[[str], None]` signature, which is fine.
 ---
