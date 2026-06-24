@@ -40,7 +40,7 @@ from stromboli.engine.actions import (
     RunVerifier,
     RunWorker,
 )
-from stromboli.engine.gate import Gate
+from stromboli.engine.gate import Gate, GateResult
 from stromboli.engine.nodes.planner import PlannerNode
 from stromboli.engine.nodes.reflector import ReflectorNode, ReflectTarget
 from stromboli.engine.nodes.verifier import VerifierNode, VerifyTarget
@@ -50,12 +50,15 @@ from stromboli.engine.result import UsageSpan
 from stromboli.engine.state import (
     STATE_DIR,
     STATE_FILE,
+    TRANSCRIPTS_DIR,
     WHOLE_DIFF,
     BuildState,
     Unit,
     UnitPhase,
     UnitStatus,
+    Verdict,
 )
+from stromboli.engine.transcript import StepRecord, TranscriptRecorder, write_transcript
 from stromboli.loop import CCRunner
 from stromboli.writeback import BlockedItem
 
@@ -97,16 +100,21 @@ def _parse_cc_usage(stdout: str) -> tuple[float | None, int, int]:
 
 
 class _MeteredRunner:
-    """Wraps a :data:`CCRunner`, recording a :class:`UsageSpan` per CC call and
-    accumulating cost between :meth:`pop_cost` reads (one read per agent step)."""
+    """Wraps a :data:`CCRunner`: records a :class:`UsageSpan` per CC call, feeds
+    the per-step transcript recorder the ``(prompt, raw_output)`` pair, and
+    accumulates cost between :meth:`pop_cost` reads (one read per agent step)."""
 
-    def __init__(self, run: CCRunner) -> None:
+    def __init__(self, run: CCRunner, recorder: TranscriptRecorder) -> None:
         self._run = run
+        self._recorder = recorder
         self.spans: list[UsageSpan] = []
         self._pending_cost = 0.0
 
     def __call__(self, argv: Sequence[str], cwd: Path) -> str:
         stdout = self._run(argv, cwd)
+        # argv is ["claude", "-p", <prompt>, ...] — capture the prompt + output.
+        prompt = argv[2] if len(argv) > 2 else ""
+        self._recorder.add(prompt, stdout)
         cost, input_tokens, output_tokens = _parse_cc_usage(stdout)
         self.spans.append(
             UsageSpan(
@@ -196,16 +204,18 @@ class GraphEngine:
             if resume and (root / STATE_DIR / STATE_FILE).exists()
             else BuildState.initial(root)
         )
-        meter = _MeteredRunner(self._cc_run)
+        recorder = TranscriptRecorder()
+        meter = _MeteredRunner(self._cc_run, recorder)
         nodes = self._build_nodes(meter)
         breaker = CircuitBreaker(self._breaker_config)
         trip_holder: list[BreakerTrip] = []
 
         terminal: str | None = None
-        for _ in range(self._max_steps):
+        for step in range(1, self._max_steps + 1):
             action = self._policy.decide(state)
             terminal = self._dispatch(
-                action, state, root, spec, nodes, breaker, meter, trip_holder
+                action, state, root, spec, nodes, breaker, meter, recorder,
+                trip_holder, step,
             )
             state.save()
             if terminal is not None:
@@ -235,52 +245,136 @@ class GraphEngine:
         nodes: EngineNodes,
         breaker: CircuitBreaker,
         meter: _MeteredRunner,
+        recorder: TranscriptRecorder,
         trip_holder: list[BreakerTrip],
+        step: int,
     ) -> str | None:
-        """Apply ``action``; return a terminal reason or ``None`` to continue."""
-        state.record({"action": type(action).__name__})
+        """Apply ``action``; write its transcript + history; return a terminal
+        reason or ``None`` to continue."""
+        name = type(action).__name__
+        gate_text: str | None = None
+        terminal: str | None = None
+        is_agent = True
 
         if isinstance(action, RunPlanner):
             state.plan = nodes.planner.plan(state, spec, root)
-            self._meter_breaker(state, breaker, meter, trip_holder)
-            return None
-
-        if isinstance(action, Replan):
+            outcome = (
+                f"planned {len(state.plan.units)} unit(s) (plan v{state.plan.version})"
+            )
+            hist: dict[str, Any] = {
+                "plan_version": state.plan.version,
+                "units": len(state.plan.units),
+            }
+        elif isinstance(action, Replan):
             state.replan_count += 1
             state.plan = nodes.planner.plan(state, spec, root)
             state.pending_replan = None
-            self._meter_breaker(state, breaker, meter, trip_holder)
-            return None
-
-        if isinstance(action, RunWorker):
-            self._run_worker(action.unit_id, state, root, nodes)
-            self._meter_breaker(state, breaker, meter, trip_holder)
-            return None
-
-        if isinstance(action, RunVerifier):
-            self._run_verifier(action.scope, state, root, nodes)
-            self._meter_breaker(state, breaker, meter, trip_holder)
-            return None
-
-        if isinstance(action, Reflect):
+            outcome = (
+                f"replanned → v{state.plan.version} "
+                f"({len(state.plan.units)} unit(s)), replan #{state.replan_count}"
+            )
+            hist = {"plan_version": state.plan.version, "replan_count": state.replan_count}
+        elif isinstance(action, RunWorker):
+            gate_result = self._run_worker(action.unit_id, state, root, nodes)
+            unit = state.unit(action.unit_id)
+            attempt = unit.attempts if unit else 0
+            phase = unit.phase.value if unit else "?"
+            gate_text = self._gate_text(gate_result)
+            outcome = (
+                f"unit {action.unit_id} attempt {attempt}; "
+                f"gate {'passed' if gate_result.passed else 'failed'} → {phase}"
+            )
+            hist = {
+                "unit": action.unit_id,
+                "attempt": attempt,
+                "gate_passed": gate_result.passed,
+                "gate_crashed": gate_result.crashed,
+            }
+        elif isinstance(action, RunVerifier):
+            verdict = self._run_verifier(action.scope, state, root, nodes)
+            met = bool(verdict and verdict.met and not verdict.hollow_tests)
+            hollow = " (hollow tests)" if verdict and verdict.hollow_tests else ""
+            outcome = f"verdict on {action.scope}: {'met' if met else 'NOT met'}{hollow}"
+            hist = {
+                "scope": action.scope,
+                "met": verdict.met if verdict else False,
+                "hollow_tests": verdict.hollow_tests if verdict else False,
+                "reasons": list(verdict.reasons) if verdict else [],
+            }
+        elif isinstance(action, Reflect):
             self._run_reflector(action.unit_id, state, root, nodes)
+            if state.pending_replan is not None:
+                outcome = f"requested replan: {state.pending_replan}"
+                hist = {"unit": action.unit_id, "replan": True}
+            else:
+                outcome = "produced worker feedback"
+                hist = {"unit": action.unit_id, "replan": False}
+        elif isinstance(action, Integrate):
+            is_agent = False
+            outcome = "build integrated — opening PR"
+            hist = {}
+            terminal = INTEGRATED
+        else:  # RouteToReview — terminal; park any unfinished units.
+            is_agent = False
+            self._block_unverified(
+                state, f"build routed to review ({action.reason.value})"
+            )
+            outcome = f"routed to review: {action.reason.value}"
+            hist = {"reason": action.reason.value}
+            terminal = action.reason.value
+
+        if is_agent:
             self._meter_breaker(state, breaker, meter, trip_holder)
-            return None
 
-        if isinstance(action, Integrate):
-            return INTEGRATED
+        self._finish_step(state, root, step, name, outcome, gate_text, recorder, hist)
+        return terminal
 
-        # RouteToReview — terminal; park any unfinished units.
-        self._block_unverified(state, f"build routed to review ({action.reason.value})")
-        return action.reason.value
+    def _finish_step(
+        self,
+        state: BuildState,
+        root: Path,
+        step: int,
+        action: str,
+        outcome: str,
+        gate: str | None,
+        recorder: TranscriptRecorder,
+        hist: dict[str, Any],
+    ) -> None:
+        """Write the step's transcript and append an enriched history entry."""
+        record = StepRecord(
+            step=step,
+            action=action,
+            outcome=outcome,
+            exchanges=recorder.drain(),
+            gate=gate,
+        )
+        write_transcript(root, record)
+        state.record(
+            {
+                "step": step,
+                "action": action,
+                "outcome": outcome,
+                "transcript": f"{TRANSCRIPTS_DIR}/{record.filename}",
+                **hist,
+            }
+        )
+
+    @staticmethod
+    def _gate_text(gate_result: GateResult) -> str:
+        """Render the gate's command + result for the worker transcript."""
+        command = " ".join(gate_result.command) if gate_result.command else "(none)"
+        if gate_result.passed:
+            return f"{command} → passed"
+        status = "crashed" if gate_result.crashed else "failed"
+        return f"{command} → {status}\n{gate_result.output}"
 
     # -- node steps ------------------------------------------------------- #
     def _run_worker(
         self, unit_id: str, state: BuildState, root: Path, nodes: EngineNodes
-    ) -> None:
+    ) -> GateResult:
         unit = state.unit(unit_id)
         if unit is None:  # pragma: no cover - policy never names a missing unit
-            return
+            return GateResult(passed=True)
         nodes.worker.work(state, unit, root)
         unit.attempts += 1
         digest = hashlib.sha1(self._diff(root).encode("utf-8")).hexdigest()  # noqa: S324
@@ -293,22 +387,23 @@ class GraphEngine:
             # Failed (or crashed) checks → another worker pass; surface the output
             # so the next attempt can react to the real test/lint errors.
             kind = "crashed" if gate_result.crashed else "failed"
-            state.feedback = f"The objective checks {kind}:\n{gate_result.output}"
+            state.add_feedback(f"The objective checks {kind}:\n{gate_result.output}")
             unit.phase = UnitPhase.WORK
+        return gate_result
 
     def _run_verifier(
         self, scope: str, state: BuildState, root: Path, nodes: EngineNodes
-    ) -> None:
+    ) -> Verdict | None:
         diff = self._diff(root)
         if scope == WHOLE_DIFF:
             criterion = "\n".join(u.acceptance_criterion for u in state.plan.units)
             target = VerifyTarget(scope=WHOLE_DIFF, acceptance_criterion=criterion, diff=diff)
             state.whole_verdict = nodes.verifier.verify(state, target, root)
-            return
+            return state.whole_verdict
 
         unit = state.unit(scope)
         if unit is None:  # pragma: no cover - policy never names a missing unit
-            return
+            return None
         target = VerifyTarget(
             scope=unit.id,
             acceptance_criterion=unit.acceptance_criterion,
@@ -322,6 +417,7 @@ class GraphEngine:
             unit.status = UnitStatus.VERIFIED
         else:
             unit.phase = UnitPhase.REFLECT
+        return verdict
 
     def _run_reflector(
         self, unit_id: str, state: BuildState, root: Path, nodes: EngineNodes
@@ -342,7 +438,7 @@ class GraphEngine:
                 reflection.replan_reason or "reflector requested a replan"
             )
         else:
-            state.feedback = reflection.feedback
+            state.add_feedback(reflection.feedback)
             unit.phase = UnitPhase.WORK
 
     # -- helpers ---------------------------------------------------------- #

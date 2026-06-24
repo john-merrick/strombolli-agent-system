@@ -330,3 +330,96 @@ def test_graph_result_conforms_to_build_result(tmp_path: Path) -> None:
     result = _engine(agents).run(tmp_path, spec=SPEC)
     assert isinstance(result, GraphResult)
     assert isinstance(result, BuildResult)
+
+
+# --------------------------------------------------------------------------- #
+# Forensics: transcripts, enriched history, feedback trail                    #
+# --------------------------------------------------------------------------- #
+def test_each_step_writes_a_transcript(tmp_path: Path) -> None:
+    agents = Agents(_plan("c"), WORKED, _verdict(True), _verdict(True))
+    _engine(agents).run(tmp_path, spec=SPEC)
+
+    transcripts = sorted((tmp_path / ".stromboli" / "transcripts").glob("*.md"))
+    names = [p.name for p in transcripts]
+    # One file per step, ordered, named by action.
+    assert names == [
+        "001-RunPlanner.md",
+        "002-RunWorker.md",
+        "003-RunVerifier.md",
+        "004-RunVerifier.md",
+        "005-Integrate.md",
+    ]
+
+
+def test_transcript_captures_prompt_and_raw_output(tmp_path: Path) -> None:
+    agents = Agents(_plan("GET /health"), WORKED, _verdict(True), _verdict(True))
+    _engine(agents).run(tmp_path, spec=SPEC)
+
+    planner_md = (
+        tmp_path / ".stromboli" / "transcripts" / "001-RunPlanner.md"
+    ).read_text(encoding="utf-8")
+    # The exact prompt the planner saw and its raw output are both recorded.
+    assert "Decompose the task" in planner_md
+    assert "GET /health" in planner_md
+    assert "Exchange 1 — raw output" in planner_md
+
+
+def test_worker_transcript_records_the_gate(tmp_path: Path) -> None:
+    gate = FakeGate(
+        GateResult(passed=False, output="1 failed", command=("pytest",)),
+        GateResult(passed=True),
+    )
+    agents = Agents(_plan("c"), WORKED, WORKED, _verdict(True), _verdict(True))
+    _engine(agents, gate=gate).run(tmp_path, spec=SPEC)
+
+    worker_md = (
+        tmp_path / ".stromboli" / "transcripts" / "002-RunWorker.md"
+    ).read_text(encoding="utf-8")
+    assert "## Objective gate" in worker_md
+    assert "pytest → failed" in worker_md
+    assert "1 failed" in worker_md
+
+
+def test_history_is_enriched_with_outcomes(tmp_path: Path) -> None:
+    agents = Agents(
+        _plan("c"),
+        WORKED,
+        _verdict(False, reasons=["hollow"]),
+        _reflect(feedback="add a real assertion"),
+        WORKED,
+        _verdict(True),
+        _verdict(True),
+    )
+    _engine(agents).run(tmp_path, spec=SPEC)
+
+    state = BuildState.load(tmp_path)
+    # Every history entry has a step, action, outcome, and transcript pointer.
+    assert all(
+        {"step", "action", "outcome", "transcript"} <= set(entry)
+        for entry in state.history
+    )
+    verifier_entries = [e for e in state.history if e["action"] == "RunVerifier"]
+    # The first verifier rejected with its reason captured on the timeline.
+    assert verifier_entries[0]["met"] is False
+    assert verifier_entries[0]["reasons"] == ["hollow"]
+
+
+def test_feedback_trail_accumulates_across_attempts(tmp_path: Path) -> None:
+    agents = Agents(
+        _plan("c"),
+        WORKED,
+        _verdict(False, reasons=["r1"]),
+        _reflect(feedback="first round feedback"),
+        WORKED,
+        _verdict(False, reasons=["r2"]),
+        _reflect(feedback="second round feedback"),
+        WORKED,
+        _verdict(True),
+        _verdict(True),
+    )
+    _engine(agents).run(tmp_path, spec=SPEC)
+
+    feedback_md = (tmp_path / ".stromboli" / "feedback.md").read_text(encoding="utf-8")
+    # Both reflections survive on disk (the trail was not overwritten).
+    assert "first round feedback" in feedback_md
+    assert "second round feedback" in feedback_md
