@@ -18,7 +18,6 @@ unit-testable end-to-end with fakes — no git, network, or real ``claude``.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from stromboli.breaker import BreakerConfig, CircuitBreaker, handle_trip
+from stromboli.engine.result import BuildResult
 from stromboli.loop import LoopResult, RalphLoop
 from stromboli.notion import Repo, Task
 from stromboli.observability import BuildTracer, NullTracer, record_build_trace
@@ -34,11 +34,7 @@ from stromboli.pr import GitRunner, publish_pr
 from stromboli.prd import build_prd, write_prd
 from stromboli.routing import route_task
 from stromboli.worktree import Worktree
-from stromboli.writeback import (
-    build_feedback_summary,
-    read_blocked_items,
-    resilient_append,
-)
+from stromboli.writeback import build_feedback_summary, resilient_append
 
 logger = logging.getLogger(__name__)
 
@@ -76,15 +72,6 @@ class BuildDeps:
     git_run: GitRunner | None = None
 
 
-def _count_completed(prd_path: Path) -> int:
-    """Count ``passes:true`` items in the worktree PRD (for the summary)."""
-    try:
-        data = json.loads(prd_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):  # pragma: no cover - defensive
-        return 0
-    return sum(1 for item in data.get("items", []) if item.get("passes", False))
-
-
 def run_build(task: Task, deps: BuildDeps) -> None:
     """Run the full build for a claimed task. Best-effort, never re-raises.
 
@@ -119,7 +106,7 @@ def run_build(task: Task, deps: BuildDeps) -> None:
 
 
 def _integrate(
-    task: Task, worktree: Worktree, result: LoopResult, deps: BuildDeps
+    task: Task, worktree: Worktree, result: BuildResult, deps: BuildDeps
 ) -> str | None:
     """Route the finished loop: trip → Review; else open a PR and route."""
     if result.tripped and result.trip is not None:
@@ -135,14 +122,14 @@ def _integrate(
 
 def _finalize(
     task: Task,
-    result: LoopResult | None,
+    result: BuildResult | None,
     pr_url: str | None,
     error: str | None,
     deps: BuildDeps,
 ) -> None:
     """Append the resilient feedback summary and record the trace."""
-    blocked = read_blocked_items(result.prd_path) if result is not None else []
-    completed = _count_completed(result.prd_path) if result is not None else 0
+    blocked = result.blocked_items() if result is not None else []
+    completed = result.completed_count() if result is not None else 0
     trip = result.trip if result is not None else None
 
     summary = build_feedback_summary(

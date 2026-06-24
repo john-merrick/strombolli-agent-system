@@ -33,9 +33,29 @@ from pathlib import Path
 from typing import Any, Final
 
 from stromboli.breaker import BreakerTrip, CircuitBreaker
+from stromboli.engine.result import UsageSpan
 from stromboli.prd import PRD_RELATIVE_PATH
+from stromboli.writeback import BlockedItem, read_blocked_items
 
 logger = logging.getLogger(__name__)
+
+
+def _iteration_usage(data: dict[str, Any] | None) -> tuple[int, int]:
+    """Extract ``(input_tokens, output_tokens)`` from a CC JSON payload.
+
+    Tolerates the tokens living under a ``usage`` object or at the top level;
+    anything missing or non-numeric reads as zero.
+    """
+    if not data:
+        return (0, 0)
+    raw = data.get("usage")
+    source: dict[str, Any] = raw if isinstance(raw, dict) else data
+
+    def _int(key: str) -> int:
+        value = source.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    return (_int("input_tokens"), _int("output_tokens"))
 
 #: The string the Ralph agent prints when no eligible item remains.
 COMPLETION_SIGNAL: Final = "<promise>COMPLETE</promise>"
@@ -118,6 +138,39 @@ class LoopResult:
     def total_cost_usd(self) -> float:
         """Sum of per-iteration USD costs that CC reported."""
         return sum(it.cost_usd or 0.0 for it in self.iterations)
+
+    # -- BuildResult conformance (engine Phase 0) -------------------------- #
+    @property
+    def artifact_path(self) -> Path:
+        """The build's primary artifact — the worktree PRD (for finalize)."""
+        return self.prd_path
+
+    def blocked_items(self) -> list[BlockedItem]:
+        """The PRD items the loop gave up on, with their diagnoses."""
+        return read_blocked_items(self.prd_path)
+
+    def completed_count(self) -> int:
+        """Count ``passes:true`` items in the worktree PRD (for the summary)."""
+        try:
+            data = json.loads(self.prd_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):  # pragma: no cover - defensive
+            return 0
+        return sum(1 for item in data.get("items", []) if item.get("passes", False))
+
+    def usage_spans(self) -> list[UsageSpan]:
+        """One :class:`UsageSpan` per iteration, in order, for the tracer."""
+        spans: list[UsageSpan] = []
+        for it in self.iterations:
+            input_tokens, output_tokens = _iteration_usage(it.data)
+            spans.append(
+                UsageSpan(
+                    index=it.index,
+                    cost_usd=it.cost_usd,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            )
+        return spans
 
 
 def has_eligible_items(prd_path: str | Path) -> bool:

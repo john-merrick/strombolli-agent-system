@@ -29,28 +29,10 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from stromboli.loop import LoopResult
+    from stromboli.engine.result import BuildResult
     from stromboli.notion import Task
 
 logger = logging.getLogger(__name__)
-
-
-def _usage(data: dict[str, Any] | None) -> tuple[int, int]:
-    """Extract ``(input_tokens, output_tokens)`` from a CC JSON payload.
-
-    Tolerates the tokens living under a ``usage`` object or at the top level;
-    anything missing or non-numeric reads as zero.
-    """
-    if not data:
-        return (0, 0)
-    raw = data.get("usage")
-    source: dict[str, Any] = raw if isinstance(raw, dict) else data
-
-    def _int(key: str) -> int:
-        value = source.get(key)
-        return int(value) if isinstance(value, (int, float)) else 0
-
-    return (_int("input_tokens"), _int("output_tokens"))
 
 
 class BuildTracer:
@@ -93,13 +75,15 @@ class NullTracer(BuildTracer):
 def record_build_trace(
     tracer: BuildTracer,
     task: Task,
-    result: LoopResult,
+    result: BuildResult,
     *,
     error: str | None = None,
 ) -> None:
     """Record a finished build onto ``tracer``: spans, usage, and tags.
 
-    Never raises on a tracing problem — observability must not fail the build.
+    Consumes the engine-agnostic :class:`~stromboli.engine.result.BuildResult`
+    (Ralph or graph) via its :meth:`usage_spans`. Never raises on a tracing
+    problem — observability must not fail the build.
     """
     try:
         tracer.start(task_id=task.page_id, name=task.name)
@@ -107,17 +91,16 @@ def record_build_trace(
         total_cost = 0.0
         total_in = 0
         total_out = 0
-        for it in result.iterations:
-            input_tokens, output_tokens = _usage(it.data)
+        for span in result.usage_spans():
             tracer.iteration(
-                index=it.index,
-                cost_usd=it.cost_usd,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                index=span.index,
+                cost_usd=span.cost_usd,
+                input_tokens=span.input_tokens,
+                output_tokens=span.output_tokens,
             )
-            total_cost += it.cost_usd or 0.0
-            total_in += input_tokens
-            total_out += output_tokens
+            total_cost += span.cost_usd or 0.0
+            total_in += span.input_tokens
+            total_out += span.output_tokens
 
         tracer.record_totals(
             cost_usd=total_cost, input_tokens=total_in, output_tokens=total_out
