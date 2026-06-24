@@ -90,6 +90,26 @@ Repos that build differently can override the commands by supplying
 `gate_commands` to `BuildDeps` (e.g. a `make test` target or a different type
 checker). The gate runner short-circuits on the first non-passing command.
 
+### Debugging a build
+
+When a graph build fails or routes to Review, three places explain why — read
+them in this order:
+
+1. **Notion feedback summary** — the top-level triage: completed count, PR link,
+   blocked items + reasons, breaker note. Start here.
+2. **`.stromboli/` in the worktree** (ships with the PR) — the build's black box:
+   - `transcripts/NNN-<action>.md` — one file per step, in order, with the exact
+     prompt each agent saw, its raw output, and (for worker steps) the objective
+     gate's command + result. This is where you tell "the agent was wrong" from
+     "my criterion was ambiguous."
+   - `state.json` — the enriched timeline (`history`): each step's action,
+     outcome, verdict/gate details, and a pointer to its transcript.
+   - `feedback.md` — the append-only trail of every reflection / gate failure.
+3. **Langfuse** — cross-run cost / token / latency aggregates per span.
+
+Process logs go to stderr; set `STROMBOLI_LOG_FILE` to also persist them (and
+full tracebacks) to a file — the console handler is kept either way.
+
 ### Live smoke (manual, behind the flag)
 
 The graph engine is validated end-to-end by hand before being made default:
