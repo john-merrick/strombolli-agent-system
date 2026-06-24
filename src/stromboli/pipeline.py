@@ -25,16 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from stromboli.breaker import BreakerConfig, CircuitBreaker, handle_trip
-from stromboli.engine.result import BuildResult
+from stromboli.breaker import BreakerConfig, CircuitBreaker
+from stromboli.engine.integrate import finalize_build, integrate_build
 from stromboli.loop import LoopResult, RalphLoop
 from stromboli.notion import Repo, Task
-from stromboli.observability import BuildTracer, NullTracer, record_build_trace
-from stromboli.pr import GitRunner, publish_pr
+from stromboli.observability import BuildTracer, NullTracer
+from stromboli.pr import GitRunner
 from stromboli.prd import build_prd, write_prd
-from stromboli.routing import route_task
 from stromboli.worktree import Worktree
-from stromboli.writeback import build_feedback_summary, resilient_append
 
 logger = logging.getLogger(__name__)
 
@@ -97,53 +95,26 @@ def run_build(task: Task, deps: BuildDeps) -> None:
             loop = deps.make_loop(breaker)
             result = loop.run(worktree.path)
 
-            pr_url = _integrate(task, worktree, result, deps)
+            pr_url = integrate_build(
+                task=task,
+                worktree=worktree,
+                result=result,
+                notion=deps.notion,
+                github=deps.github,
+                git_run=deps.git_run,
+            )
         except Exception as exc:  # noqa: BLE001 - one task must not crash the worker
             error = f"{type(exc).__name__}: {exc}"
             logger.exception("Build failed for task %s", task.page_id)
 
-        _finalize(task, result, pr_url, error, deps)
-
-
-def _integrate(
-    task: Task, worktree: Worktree, result: BuildResult, deps: BuildDeps
-) -> str | None:
-    """Route the finished loop: trip → Review; else open a PR and route."""
-    if result.tripped and result.trip is not None:
-        handle_trip(deps.notion, task.page_id, result.trip)
-        return None
-
-    publish = publish_pr(
-        deps.notion, deps.github, worktree, task, run=deps.git_run
-    )
-    route_task(deps.notion, task, publish)
-    return publish.pr_url
-
-
-def _finalize(
-    task: Task,
-    result: BuildResult | None,
-    pr_url: str | None,
-    error: str | None,
-    deps: BuildDeps,
-) -> None:
-    """Append the resilient feedback summary and record the trace."""
-    blocked = result.blocked_items() if result is not None else []
-    completed = result.completed_count() if result is not None else 0
-    trip = result.trip if result is not None else None
-
-    summary = build_feedback_summary(
-        pr_url=pr_url,
-        blocked_items=blocked,
-        completed_count=completed,
-        trip=trip,
-    )
-    if error is not None:
-        summary += f"\n\n> ⚠️ Build error: {error}"
-    resilient_append(deps.notion, task.page_id, summary)
-
-    if result is not None:
-        record_build_trace(deps.tracer, task, result, error=error)
+        finalize_build(
+            task=task,
+            result=result,
+            pr_url=pr_url,
+            error=error,
+            notion=deps.notion,
+            tracer=deps.tracer,
+        )
 
 
 __all__ = [
