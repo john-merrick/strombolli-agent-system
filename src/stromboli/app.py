@@ -60,6 +60,7 @@ def build_deps(settings: Settings) -> BuildDeps:
             max_cost_usd=DEFAULT_MAX_COST_USD,
         ),
         tracer=tracer,
+        engine=settings.stromboli_engine,
     )
 
 

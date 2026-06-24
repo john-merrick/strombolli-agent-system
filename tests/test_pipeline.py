@@ -242,3 +242,93 @@ def test_worktree_is_cleaned_up(tmp_path: Path) -> None:
     # The context manager tore the worktree down (cleanup on the way out).
     assert isinstance(deps.worktrees, FakeWorktrees)
     assert deps.worktrees.removed is True
+
+
+# --------------------------------------------------------------------------- #
+# Engine selection — graph path consumes the same finalize                    #
+# --------------------------------------------------------------------------- #
+class FakeGraphResult:
+    """A minimal BuildResult the graph engine would return."""
+
+    def __init__(self) -> None:
+        self.reason = "integrated"
+        self.tripped = False
+        self.trip = None
+        self.artifact_path = Path(".stromboli/state.json")
+
+    def blocked_items(self) -> list[Any]:
+        return []
+
+    def completed_count(self) -> int:
+        return 2
+
+    def usage_spans(self) -> list[Any]:
+        return []
+
+
+class FakeGraph:
+    """A GraphRunner stub: records its call and returns a scripted result."""
+
+    def __init__(self, result: FakeGraphResult) -> None:
+        self._result = result
+        self.spec: str | None = None
+
+    def run(
+        self, worktree_root: Any, *, spec: str, resume: bool = False
+    ) -> FakeGraphResult:
+        self.spec = spec
+        return self._result
+
+
+def test_graph_engine_selected_by_flag_uses_same_finalize(tmp_path: Path) -> None:
+    from stromboli.pipeline import ENGINE_GRAPH
+
+    notion = FakeNotion(Repo(owner="o", repo="r"))
+    github = FakeGitHub()
+    graph = FakeGraph(FakeGraphResult())
+    repo = Repo(owner="o", repo="r")
+    deps = BuildDeps(
+        notion=notion,
+        github=github,
+        worktrees=FakeWorktrees(tmp_path, repo),
+        tracer=NullTracer(),
+        breaker_config=BreakerConfig(max_iterations=25, max_cost_usd=5.0),
+        git_run=FakeGit(has_changes=True),
+        engine=ENGINE_GRAPH,
+        make_graph=lambda d: graph,
+    )
+
+    run_build(_task(needs_review=False, spec="- Return 200 on /health"), deps)
+
+    # The graph engine ran (got the task spec) and its result flowed through the
+    # shared integrate/finalize path: PR opened, routed Complete, summary written.
+    assert graph.spec == "- Return 200 on /health"
+    assert github.opened == 1
+    assert notion.status == "Complete"
+    assert "Completed:** 2" in notion.appended[-1]
+
+
+def test_default_engine_path_is_ralph(tmp_path: Path) -> None:
+    # With no engine override, the Ralph loop factory is used (a graph factory
+    # that explodes proves the default never touches it).
+    notion = FakeNotion(Repo(owner="o", repo="r"))
+    github = FakeGitHub()
+    loop = FakeLoop(reason=StopReason.COMPLETE)
+    repo = Repo(owner="o", repo="r")
+
+    def _boom(_: Any) -> Any:
+        raise AssertionError("graph factory must not be called for the Ralph default")
+
+    deps = BuildDeps(
+        notion=notion,
+        github=github,
+        worktrees=FakeWorktrees(tmp_path, repo),
+        tracer=NullTracer(),
+        breaker_config=BreakerConfig(max_iterations=25, max_cost_usd=5.0),
+        make_loop=lambda breaker: loop,
+        git_run=FakeGit(has_changes=True),
+        make_graph=_boom,
+    )
+
+    run_build(_task(), deps)
+    assert notion.status == "Complete"

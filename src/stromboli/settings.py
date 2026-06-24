@@ -9,7 +9,7 @@ is mandatory; if any is missing, :func:`load_settings` fails fast with a
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     workspace_root: Path = Field(alias="WORKSPACE_ROOT")
     anthropic_api_key: str = Field(alias="ANTHROPIC_API_KEY")
     dispatch_shared_secret: str = Field(alias="DISPATCH_SHARED_SECRET")
+
+    #: Which build engine to use. Optional; defaults to the legacy Ralph loop so
+    #: existing behaviour is unchanged until ``graph`` is deliberately selected.
+    stromboli_engine: Literal["ralph", "graph"] = Field(
+        default="ralph", alias="STROMBOLI_ENGINE"
+    )
 
 
 def load_settings(**overrides: Any) -> Settings:

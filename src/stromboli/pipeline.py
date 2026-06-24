@@ -19,15 +19,19 @@ unit-testable end-to-end with fakes — no git, network, or real ``claude``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 from stromboli.breaker import BreakerConfig, CircuitBreaker
+from stromboli.engine.gate import DEFAULT_COMMANDS, GateCommand, ObjectiveGate
 from stromboli.engine.integrate import finalize_build, integrate_build
-from stromboli.loop import LoopResult, RalphLoop
+from stromboli.engine.orchestrator import GraphEngine
+from stromboli.engine.policy import DeterministicPolicy
+from stromboli.engine.result import BuildResult
+from stromboli.loop import CCRunner, LoopResult, RalphLoop, default_cc_runner
 from stromboli.notion import Repo, Task
 from stromboli.observability import BuildTracer, NullTracer
 from stromboli.pr import GitRunner
@@ -36,11 +40,23 @@ from stromboli.worktree import Worktree
 
 logger = logging.getLogger(__name__)
 
+#: The two selectable build engines (see ``STROMBOLI_ENGINE``).
+ENGINE_RALPH = "ralph"
+ENGINE_GRAPH = "graph"
+
 
 class LoopRunner(Protocol):
     """The slice of :class:`~stromboli.loop.RalphLoop` the pipeline drives."""
 
     def run(self, worktree_root: str | Path) -> LoopResult: ...
+
+
+class GraphRunner(Protocol):
+    """The slice of :class:`~stromboli.engine.orchestrator.GraphEngine` driven."""
+
+    def run(
+        self, worktree_root: str | Path, *, spec: str, resume: bool = ...
+    ) -> BuildResult: ...
 
 
 class WorktreeProvider(Protocol):
@@ -56,6 +72,16 @@ def _default_make_loop(breaker: CircuitBreaker) -> LoopRunner:
     return RalphLoop(breaker=breaker)
 
 
+def _default_make_graph(deps: BuildDeps) -> GraphRunner:
+    """Default graph factory: a real :class:`GraphEngine` from the deps."""
+    return GraphEngine(
+        policy=DeterministicPolicy(),
+        gate=ObjectiveGate(deps.gate_commands or DEFAULT_COMMANDS),
+        cc_run=deps.graph_cc_run or default_cc_runner,
+        breaker_config=deps.breaker_config,
+    )
+
+
 @dataclass
 class BuildDeps:
     """The collaborators :func:`run_build` needs, all injectable for tests."""
@@ -68,32 +94,37 @@ class BuildDeps:
     make_loop: Callable[[CircuitBreaker], LoopRunner] = _default_make_loop
     #: The git seam passed to PR mechanics; ``None`` uses the real git runner.
     git_run: GitRunner | None = None
+    #: Which engine to run — ``ralph`` (default) or ``graph``.
+    engine: str = ENGINE_RALPH
+    #: Graph-engine factory (injected for tests).
+    make_graph: Callable[[BuildDeps], GraphRunner] = _default_make_graph
+    #: Per-repo objective-gate command override; ``None`` uses the defaults.
+    gate_commands: Sequence[GateCommand] | None = None
+    #: The CC runner for graph agents; ``None`` uses the real ``claude`` runner.
+    graph_cc_run: CCRunner | None = None
 
 
 def run_build(task: Task, deps: BuildDeps) -> None:
     """Run the full build for a claimed task. Best-effort, never re-raises.
 
-    The worktree is always torn down (its context manager cleans up on success
-    or failure). A failure mid-build is recorded on the trace and surfaced in the
-    feedback summary rather than crashing the worker.
+    The configured engine (Ralph or graph) produces a
+    :class:`~stromboli.engine.result.BuildResult` that the *same* integrator /
+    finalize path consumes. The worktree is always torn down (its context
+    manager cleans up on success or failure); a failure mid-build is recorded on
+    the trace and surfaced in the feedback summary rather than crashing the
+    worker.
     """
     repo = deps.notion.get_project_repo(task)
     error: str | None = None
-    result: LoopResult | None = None
+    result: BuildResult | None = None
     pr_url: str | None = None
 
     with deps.worktrees.worktree(repo, task.page_id, task.name) as worktree:
         try:
-            prd = build_prd(
-                task,
-                branch=worktree.branch,
-                max_attempts=deps.breaker_config.max_iterations,
-            )
-            write_prd(worktree.path, prd)
-
-            breaker = CircuitBreaker(deps.breaker_config)
-            loop = deps.make_loop(breaker)
-            result = loop.run(worktree.path)
+            if deps.engine == ENGINE_GRAPH:
+                result = _run_graph(task, worktree, deps)
+            else:
+                result = _run_ralph(task, worktree, deps)
 
             pr_url = integrate_build(
                 task=task,
@@ -117,8 +148,31 @@ def run_build(task: Task, deps: BuildDeps) -> None:
         )
 
 
+def _run_ralph(task: Task, worktree: Worktree, deps: BuildDeps) -> LoopResult:
+    """Compile the PRD and drive the Ralph loop under the breaker."""
+    prd = build_prd(
+        task,
+        branch=worktree.branch,
+        max_attempts=deps.breaker_config.max_iterations,
+    )
+    write_prd(worktree.path, prd)
+
+    breaker = CircuitBreaker(deps.breaker_config)
+    loop = deps.make_loop(breaker)
+    return loop.run(worktree.path)
+
+
+def _run_graph(task: Task, worktree: Worktree, deps: BuildDeps) -> BuildResult:
+    """Drive the graph engine over the task spec in the worktree."""
+    engine = deps.make_graph(deps)
+    return engine.run(worktree.path, spec=task.spec)
+
+
 __all__ = [
+    "ENGINE_GRAPH",
+    "ENGINE_RALPH",
     "BuildDeps",
+    "GraphRunner",
     "LoopRunner",
     "WorktreeProvider",
     "run_build",

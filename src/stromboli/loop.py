@@ -212,6 +212,10 @@ def _default_runner(argv: Sequence[str], cwd: Path) -> str:
     return proc.stdout
 
 
+#: The real Claude Code runner (shell out to ``claude``); shared by both engines.
+default_cc_runner: CCRunner = _default_runner
+
+
 def _parse_iteration(index: int, stdout: str) -> Iteration:
     """Parse one CC stdout payload into an :class:`Iteration`.
 
@@ -333,5 +337,6 @@ __all__ = [
     "RalphLoop",
     "StopReason",
     "build_cc_argv",
+    "default_cc_runner",
     "has_eligible_items",
 ]

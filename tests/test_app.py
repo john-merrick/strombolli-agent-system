@@ -39,6 +39,18 @@ def test_build_deps_constructs_the_graph() -> None:
     assert deps.github is not None
 
 
+def test_default_engine_is_ralph() -> None:
+    # No STROMBOLI_ENGINE set → the legacy Ralph engine, unchanged behaviour.
+    deps = build_deps(_settings())
+    assert deps.engine == "ralph"
+
+
+def test_graph_engine_selected_by_env_flag() -> None:
+    settings = load_settings(_env_file=None, **_ENV, STROMBOLI_ENGINE="graph")
+    deps = build_deps(settings)
+    assert deps.engine == "graph"
+
+
 def test_app_healthcheck_and_secret_enforcement() -> None:
     app = create_stromboli_app(_settings())
     client = TestClient(app)
