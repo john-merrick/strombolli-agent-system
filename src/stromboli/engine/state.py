@@ -168,7 +168,10 @@ class BuildState:
 
     plan: Plan
     root: Path
+    #: The latest feedback (what the next worker / planner prompt reads).
     feedback: str = ""
+    #: The append-only trail of every feedback entry, for forensics.
+    feedback_history: list[str] = field(default_factory=list)
     replan_count: int = 0
     history: list[dict[str, Any]] = field(default_factory=list)
     #: The verifier's verdict on the whole accumulated diff, once run.
@@ -199,6 +202,15 @@ class BuildState:
         """Append one step to the run history (for resume + observability)."""
         self.history.append(step)
 
+    def add_feedback(self, text: str) -> None:
+        """Set the latest feedback and append it to the append-only trail.
+
+        ``feedback`` drives the next prompt; ``feedback_history`` keeps every
+        entry so a build's full reflection / gate-failure trail survives on disk.
+        """
+        self.feedback = text
+        self.feedback_history.append(text)
+
     def unit(self, unit_id: str) -> Unit | None:
         """Look up a unit by id."""
         return next((u for u in self.plan.units if u.id == unit_id), None)
@@ -208,6 +220,7 @@ class BuildState:
         return {
             "plan": self.plan.to_dict(),
             "feedback": self.feedback,
+            "feedback_history": self.feedback_history,
             "replan_count": self.replan_count,
             "history": self.history,
             "whole_verdict": self.whole_verdict.to_dict()
@@ -221,18 +234,31 @@ class BuildState:
         """Persist the state under ``root/.stromboli`` atomically.
 
         Writes ``state.json`` via a temp file + ``os.replace`` (so a crash never
-        leaves a half-written file), mirrors ``feedback`` into ``feedback.md``,
-        and ensures the ``transcripts/`` directory exists. Returns the state path.
+        leaves a half-written file), renders the append-only feedback trail into
+        ``feedback.md``, and ensures the ``transcripts/`` directory exists.
+        Returns the state path.
         """
         state_dir = self.root / STATE_DIR
         (state_dir / TRANSCRIPTS_DIR).mkdir(parents=True, exist_ok=True)
-        (state_dir / FEEDBACK_FILE).write_text(self.feedback, encoding="utf-8")
+        (state_dir / FEEDBACK_FILE).write_text(
+            self._render_feedback(), encoding="utf-8"
+        )
 
         target = state_dir / STATE_FILE
         tmp = state_dir / f"{STATE_FILE}.tmp"
         tmp.write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, target)
         return target
+
+    def _render_feedback(self) -> str:
+        """Render ``feedback.md``: the numbered trail, or the latest when empty."""
+        if not self.feedback_history:
+            return self.feedback
+        sections = [
+            f"## Feedback {i}\n\n{entry}"
+            for i, entry in enumerate(self.feedback_history, start=1)
+        ]
+        return "\n\n".join(sections) + "\n"
 
     @classmethod
     def load(cls, root: str | Path) -> BuildState:
@@ -246,6 +272,7 @@ class BuildState:
             plan=Plan.from_dict(data["plan"]),
             root=root_path,
             feedback=str(data.get("feedback", "")),
+            feedback_history=list(data.get("feedback_history", [])),
             replan_count=int(data.get("replan_count", 0)),
             history=list(data.get("history", [])),
             whole_verdict=Verdict.from_dict(raw_whole) if raw_whole else None,

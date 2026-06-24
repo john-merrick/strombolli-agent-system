@@ -161,3 +161,41 @@ def test_plan_is_empty_for_version_zero_or_no_units(tmp_path: Path) -> None:
     assert Plan(version=0, units=[_unit("a")]).is_empty
     assert Plan(version=1, units=[]).is_empty
     assert not Plan(version=1, units=[_unit("a")]).is_empty
+
+
+# --------------------------------------------------------------------------- #
+# Append-only feedback trail                                                  #
+# --------------------------------------------------------------------------- #
+def test_add_feedback_sets_latest_and_appends_trail(tmp_path: Path) -> None:
+    state = _state(tmp_path, [_unit("a")])
+    state.add_feedback("first")
+    state.add_feedback("second")
+    # Latest drives the next prompt...
+    assert state.feedback == "second"
+    # ...while the whole trail survives.
+    assert state.feedback_history == ["first", "second"]
+
+
+def test_feedback_md_renders_the_whole_trail(tmp_path: Path) -> None:
+    state = _state(tmp_path, [_unit("a")])
+    state.add_feedback("add a real assertion")
+    state.add_feedback("still hollow — assert the value")
+    state.save()
+
+    feedback_md = (tmp_path / STATE_DIR / FEEDBACK_FILE).read_text(encoding="utf-8")
+    assert "add a real assertion" in feedback_md
+    assert "still hollow — assert the value" in feedback_md
+    # Both entries are present, numbered — the earlier one was not overwritten.
+    assert "Feedback 1" in feedback_md
+    assert "Feedback 2" in feedback_md
+
+
+def test_feedback_trail_survives_round_trip(tmp_path: Path) -> None:
+    state = _state(tmp_path, [_unit("a")])
+    state.add_feedback("one")
+    state.add_feedback("two")
+    state.save()
+
+    loaded = BuildState.load(tmp_path)
+    assert loaded.feedback == "two"
+    assert loaded.feedback_history == ["one", "two"]
