@@ -11,9 +11,21 @@ fully functional until ``STROMBOLI_ENGINE=graph`` is deliberately set.
 
 from __future__ import annotations
 
+from stromboli.engine.gate import GateResult, ObjectiveGate
+from stromboli.engine.integrate import finalize_build, integrate_build
+from stromboli.engine.orchestrator import GraphEngine, GraphResult
+from stromboli.engine.policy import ControlPolicy, DeterministicPolicy
 from stromboli.engine.result import BuildResult, UsageSpan
 
 __all__ = [
     "BuildResult",
+    "ControlPolicy",
+    "DeterministicPolicy",
+    "GateResult",
+    "GraphEngine",
+    "GraphResult",
+    "ObjectiveGate",
     "UsageSpan",
+    "finalize_build",
+    "integrate_build",
 ]

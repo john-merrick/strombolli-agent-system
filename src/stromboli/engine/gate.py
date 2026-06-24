@@ -24,6 +24,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,12 @@ class GateResult:
     crashed: bool = False
     #: The argv of the first command that failed or crashed, if any.
     command: tuple[str, ...] | None = None
+
+
+class Gate(Protocol):
+    """The slice of the objective gate the orchestrator drives (fakeable)."""
+
+    def run(self, cwd: str | Path) -> GateResult: ...
 
 
 #: The default per-repo checks. pytest's 2–5 are tooling crashes, not failures.
@@ -114,6 +121,7 @@ class ObjectiveGate:
 __all__ = [
     "DEFAULT_COMMANDS",
     "CommandRunner",
+    "Gate",
     "GateCommand",
     "GateResult",
     "ObjectiveGate",

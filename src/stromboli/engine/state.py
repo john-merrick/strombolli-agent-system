@@ -103,6 +103,8 @@ class Unit:
     last_verdict: Verdict | None = None
     #: One diff hash per worker attempt — drives the no-progress detector.
     diff_hashes: tuple[str, ...] = ()
+    #: Why the unit was blocked, set when the build parks it for Review.
+    block_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +117,7 @@ class Unit:
             "phase": self.phase.value,
             "last_verdict": self.last_verdict.to_dict() if self.last_verdict else None,
             "diff_hashes": list(self.diff_hashes),
+            "block_reason": self.block_reason,
         }
 
     @classmethod
@@ -130,6 +133,7 @@ class Unit:
             phase=UnitPhase(data.get("phase", UnitPhase.WORK.value)),
             last_verdict=Verdict.from_dict(raw_verdict) if raw_verdict else None,
             diff_hashes=tuple(data.get("diff_hashes", ())),
+            block_reason=str(data.get("block_reason", "")),
         )
 
 
