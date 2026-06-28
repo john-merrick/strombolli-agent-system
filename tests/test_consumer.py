@@ -11,7 +11,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from stromboli.consumer import STAGE_BUILDING, BuildConsumer
+from stromboli.consumer import (
+    STAGE_BUILDING,
+    BuildConsumer,
+    CompositeListener,
+)
 from stromboli.ledger import RunLedger, RunRecord, RunState
 from stromboli.worker import DispatchOutcome
 
@@ -172,6 +176,43 @@ def test_listener_failure_never_breaks_the_build(tmp_path: Path) -> None:
     consumer.run_once()
     assert process.calls == ["a"]
     assert ledger.get(run.id).state is RunState.DONE
+
+
+def test_composite_listener_fans_out_to_all(tmp_path: Path) -> None:
+    a, b = RecordingListener(), RecordingListener()
+    composite = CompositeListener((a, b))
+    consumer = BuildConsumer(_ledger(tmp_path), RecordingProcess(), listener=composite)
+    consumer.enqueue("a")
+    consumer.run_once()
+    assert a.events == b.events == [
+        ("queued", "a"),
+        ("building", "a"),
+        ("finished", "done"),
+    ]
+
+
+def test_composite_listener_isolates_a_failing_child(tmp_path: Path) -> None:
+    class BrokenChild:
+        def queued(self, run: RunRecord, position: int) -> None:
+            raise RuntimeError("down")
+
+        def building(self, run: RunRecord) -> None:
+            raise RuntimeError("down")
+
+        def finished(self, run: RunRecord) -> None:
+            raise RuntimeError("down")
+
+    healthy = RecordingListener()
+    composite = CompositeListener((BrokenChild(), healthy))
+    consumer = BuildConsumer(_ledger(tmp_path), RecordingProcess(), listener=composite)
+    consumer.enqueue("a")
+    consumer.run_once()
+    # The broken child didn't stop the healthy one from getting every event.
+    assert healthy.events == [
+        ("queued", "a"),
+        ("building", "a"),
+        ("finished", "done"),
+    ]
 
 
 def test_consumer_thread_drains_the_queue(tmp_path: Path) -> None:

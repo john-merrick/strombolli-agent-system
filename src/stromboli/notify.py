@@ -16,10 +16,14 @@ the build.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from stromboli.ledger import RunRecord
+from stromboli.ledger import RunRecord, RunState
 from stromboli.writeback import AppendGateway, resilient_append
+
+logger = logging.getLogger(__name__)
 
 
 def render_queued(run: RunRecord, position: int) -> str:
@@ -50,8 +54,110 @@ class NotionAck:
         return
 
 
+# --------------------------------------------------------------------------- #
+# Telegram push notifications                                                  #
+# --------------------------------------------------------------------------- #
+#: Sends one message text to a Telegram chat.
+Sender = Callable[[str], None]
+#: Posts ``payload`` to ``url`` (the Telegram Bot API); injected for tests.
+TelegramPoster = Callable[[str, dict[str, str]], None]
+
+#: Timeout, in seconds, for a Telegram API call.
+TELEGRAM_TIMEOUT = 10.0
+
+
+def _label(run: RunRecord) -> str:
+    return run.task_name or run.page_id
+
+
+def telegram_queued(run: RunRecord, position: int) -> str:
+    """The push sent when a dispatch is accepted into the queue."""
+    where = "next up" if position == 0 else f"#{position + 1} in queue"
+    return f"🍕 Queued: {_label(run)} ({where})"
+
+
+def telegram_building(run: RunRecord) -> str:
+    """The push sent when a build starts."""
+    return f"🛠️ Building: {_label(run)}"
+
+
+def telegram_finished(run: RunRecord) -> str:
+    """The push sent when a build finishes — done / failed / skipped."""
+    label = _label(run)
+    if run.state is RunState.DONE:
+        return f"✅ Done: {label}"
+    if run.state is RunState.FAILED:
+        error = f"\n{run.error}" if run.error else ""
+        return f"❌ Failed: {label}{error}"
+    return f"⏭️ Skipped: {label} ({run.outcome})"
+
+
+def _httpx_post(url: str, payload: dict[str, str]) -> None:
+    """Default Telegram poster: a best-effort HTTP POST via httpx."""
+    import httpx
+
+    response = httpx.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
+    response.raise_for_status()
+
+
+def telegram_sender(
+    bot_token: str, chat_id: str, *, post: TelegramPoster | None = None
+) -> Sender:
+    """Build a :data:`Sender` that posts to the Telegram Bot API."""
+    poster = post or _httpx_post
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
+    def send(text: str) -> None:
+        poster(url, {"chat_id": chat_id, "text": text})
+
+    return send
+
+
+@dataclass
+class TelegramNotifier:
+    """Lifecycle listener that pushes queued / building / finished to Telegram.
+
+    Unlike :class:`NotionAck`, this *does* notify on ``finished`` — that "✅ done /
+    ❌ failed" ping is the whole point of a phone notification. Every send is
+    best-effort: a Telegram outage logs a warning and is swallowed, never
+    disturbing the build.
+    """
+
+    send: Sender
+
+    def queued(self, run: RunRecord, position: int) -> None:
+        self._safe(telegram_queued(run, position))
+
+    def building(self, run: RunRecord) -> None:
+        self._safe(telegram_building(run))
+
+    def finished(self, run: RunRecord) -> None:
+        self._safe(telegram_finished(run))
+
+    def _safe(self, text: str) -> None:
+        try:
+            self.send(text)
+        except Exception:  # noqa: BLE001 - a notification must never break a build
+            logger.warning("Telegram notification failed; ignoring.", exc_info=True)
+
+
+def make_telegram_notifier(
+    bot_token: str, chat_id: str, *, post: TelegramPoster | None = None
+) -> TelegramNotifier:
+    """Construct a :class:`TelegramNotifier` from a bot token + chat id."""
+    return TelegramNotifier(send=telegram_sender(bot_token, chat_id, post=post))
+
+
 __all__ = [
     "NotionAck",
+    "Sender",
+    "TelegramNotifier",
+    "TelegramPoster",
+    "make_telegram_notifier",
     "render_building",
     "render_queued",
+    "telegram_building",
+    "telegram_finished",
+    "telegram_queued",
+    "telegram_sender",
 ]

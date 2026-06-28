@@ -66,6 +66,12 @@ class Settings(BaseSettings):
         default="ralph", alias="STROMBOLI_ENGINE"
     )
 
+    #: Telegram alert bot token + target chat id (optional). When both are set,
+    #: build-lifecycle notifications are pushed to the chat. Resolve from a secret
+    #: manager (e.g. 1Password ``op inject``/``op run``) at deploy time.
+    telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
+
 
 def load_settings(**overrides: Any) -> Settings:
     """Construct :class:`Settings`, failing fast on missing required variables.

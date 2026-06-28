@@ -27,9 +27,9 @@ from fastapi import FastAPI
 
 from stromboli.api import create_app
 from stromboli.breaker import BreakerConfig
-from stromboli.consumer import BuildConsumer
+from stromboli.consumer import BuildConsumer, CompositeListener, LifecycleListener
 from stromboli.ledger import RunLedger, status_snapshot
-from stromboli.notify import NotionAck
+from stromboli.notify import NotionAck, make_telegram_notifier
 from stromboli.notion import NotionTaskClient
 from stromboli.observability import build_tracer
 from stromboli.pipeline import BuildDeps, run_build
@@ -85,8 +85,23 @@ def build_consumer(settings: Settings, deps: BuildDeps) -> BuildConsumer:
     return BuildConsumer(
         ledger,
         worker.dispatch,
-        listener=NotionAck(deps.notion),
+        listener=_build_listener(settings, deps),
     )
+
+
+def _build_listener(settings: Settings, deps: BuildDeps) -> LifecycleListener:
+    """Compose the lifecycle listeners: the Notion ack, plus Telegram if set."""
+    listeners: list[LifecycleListener] = [NotionAck(deps.notion)]
+    if settings.telegram_bot_token and settings.telegram_chat_id:
+        listeners.append(
+            make_telegram_notifier(
+                settings.telegram_bot_token, settings.telegram_chat_id
+            )
+        )
+        logger.info("Telegram notifications enabled.")
+    if len(listeners) == 1:
+        return listeners[0]
+    return CompositeListener(tuple(listeners))
 
 
 def create_stromboli_app(settings: Settings | None = None) -> FastAPI:

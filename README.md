@@ -154,6 +154,17 @@ Each run moves through `queued → running → done | failed | skipped`, so a
 guard-declined dispatch (not Ready / not Agent / already claimed) is recorded as
 `skipped` rather than vanishing.
 
+### Telegram notifications (optional)
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and the worker pushes a message
+to that chat as each build is **queued**, starts **building**, and **finishes**
+(`✅ done` / `❌ failed` / `⏭️ skipped`) — the "tell me without looking" signal
+`NotionAck` deliberately leaves off the task page. Both values are read from the
+environment; the committed `.env.example` holds 1Password references, so resolve
+them at deploy time with `op inject -i .env.example -o .env` (or run the worker
+under `op run`). Sends are best-effort — a Telegram outage never disturbs a
+build. Leave either unset to disable.
+
 ### `POST /stromboli/dispatch` contract
 
 Request body:

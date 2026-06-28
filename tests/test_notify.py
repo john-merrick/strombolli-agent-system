@@ -5,7 +5,16 @@ from __future__ import annotations
 import pytest
 
 from stromboli.ledger import RunRecord, RunState
-from stromboli.notify import NotionAck, render_building, render_queued
+from stromboli.notify import (
+    NotionAck,
+    TelegramNotifier,
+    make_telegram_notifier,
+    render_building,
+    render_queued,
+    telegram_finished,
+    telegram_queued,
+    telegram_sender,
+)
 
 
 def _run(**overrides: object) -> RunRecord:
@@ -81,3 +90,65 @@ def test_ack_never_raises_on_notion_failure(monkeypatch: pytest.MonkeyPatch) -> 
 
     # resilient_append swallows the failure — the ack must not propagate it.
     NotionAck(BrokenNotion()).queued(_run(), position=0)
+
+
+# --------------------------------------------------------------------------- #
+# Telegram notifier                                                           #
+# --------------------------------------------------------------------------- #
+def test_telegram_finished_messages_per_state() -> None:
+    assert telegram_finished(_run(state=RunState.DONE)).startswith("✅ Done")
+    failed = telegram_finished(_run(state=RunState.FAILED, error="boom"))
+    assert failed.startswith("❌ Failed")
+    assert "boom" in failed
+    skipped = telegram_finished(_run(state=RunState.SKIPPED, outcome="not_ready"))
+    assert skipped.startswith("⏭️ Skipped")
+    assert "not_ready" in skipped
+
+
+def test_telegram_uses_task_name_when_present() -> None:
+    assert "Add healthcheck" in telegram_queued(_run(), position=0)
+
+
+def test_notifier_sends_on_each_lifecycle_event() -> None:
+    sent: list[str] = []
+    notifier = TelegramNotifier(send=sent.append)
+    run = _run()
+    notifier.queued(run, 1)
+    notifier.building(run)
+    notifier.finished(_run(state=RunState.DONE))
+    assert len(sent) == 3
+    assert sent[0].startswith("🍕 Queued")
+    assert sent[1].startswith("🛠️ Building")
+    assert sent[2].startswith("✅ Done")
+
+
+def test_notifier_swallows_send_failures() -> None:
+    def boom(text: str) -> None:
+        raise RuntimeError("telegram down")
+
+    # Must not raise into the consumer.
+    TelegramNotifier(send=boom).finished(_run(state=RunState.FAILED))
+
+
+def test_sender_posts_to_the_bot_api_with_chat_id() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_post(url: str, payload: dict[str, str]) -> None:
+        calls.append((url, payload))
+
+    send = telegram_sender("BOT-TOKEN", "CHAT-42", post=fake_post)
+    send("hello")
+    assert len(calls) == 1
+    url, payload = calls[0]
+    assert url == "https://api.telegram.org/botBOT-TOKEN/sendMessage"
+    assert payload == {"chat_id": "CHAT-42", "text": "hello"}
+
+
+def test_make_telegram_notifier_wires_token_and_chat() -> None:
+    calls: list[dict[str, str]] = []
+    notifier = make_telegram_notifier(
+        "T", "C", post=lambda url, payload: calls.append(payload)
+    )
+    notifier.building(_run())
+    assert calls[0]["chat_id"] == "C"
+    assert "Building" in calls[0]["text"]

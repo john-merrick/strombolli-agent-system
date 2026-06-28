@@ -53,6 +53,33 @@ class NullListener:
 
     def finished(self, run: RunRecord) -> None: ...
 
+
+class CompositeListener:
+    """Fans each lifecycle event out to several listeners, isolating failures.
+
+    One listener raising (e.g. Telegram is down) must not stop the others (e.g.
+    the Notion ack), so each child call is individually guarded.
+    """
+
+    def __init__(self, listeners: tuple[LifecycleListener, ...]) -> None:
+        self._listeners = listeners
+
+    def queued(self, run: RunRecord, position: int) -> None:
+        self._each(lambda listener: listener.queued(run, position))
+
+    def building(self, run: RunRecord) -> None:
+        self._each(lambda listener: listener.building(run))
+
+    def finished(self, run: RunRecord) -> None:
+        self._each(lambda listener: listener.finished(run))
+
+    def _each(self, call: Callable[[LifecycleListener], None]) -> None:
+        for listener in self._listeners:
+            try:
+                call(listener)
+            except Exception:  # noqa: BLE001 - one listener must not block the rest
+                logger.warning("Lifecycle listener raised; continuing.", exc_info=True)
+
 #: The coarse stage stamped while a build runs (fine stages are a follow-up).
 STAGE_BUILDING = "building"
 
@@ -165,6 +192,7 @@ __all__ = [
     "DEFAULT_POLL_INTERVAL",
     "STAGE_BUILDING",
     "BuildConsumer",
+    "CompositeListener",
     "LifecycleListener",
     "NullListener",
     "ProcessFn",
