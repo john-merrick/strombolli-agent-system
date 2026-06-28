@@ -21,11 +21,11 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 #: Default number of finished runs the ``recent`` view returns.
 DEFAULT_RECENT_LIMIT: Final = 20
@@ -91,6 +91,21 @@ class RunRecord:
     def is_terminal(self) -> bool:
         """Whether this run has finished (done / failed / skipped)."""
         return self.state in TERMINAL_STATES
+
+
+def status_snapshot(ledger: RunLedger, *, recent_limit: int = 10) -> dict[str, Any]:
+    """A plain-data snapshot of the queue for ``GET /stromboli/status``.
+
+    ``running`` is the build in flight (or ``None``), ``queued`` the waiting runs
+    in FIFO order, and ``recent`` the last finished runs newest-first — enough to
+    answer "what kicked off, what's waiting, what just happened" at a glance.
+    """
+    running = ledger.running()
+    return {
+        "running": asdict(running) if running else None,
+        "queued": [asdict(r) for r in ledger.queued()],
+        "recent": [asdict(r) for r in ledger.recent(recent_limit)],
+    }
 
 
 def _row_to_record(row: sqlite3.Row) -> RunRecord:
@@ -260,4 +275,5 @@ __all__ = [
     "RunLedger",
     "RunRecord",
     "RunState",
+    "status_snapshot",
 ]

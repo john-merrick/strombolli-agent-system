@@ -130,7 +130,29 @@ The worker exposes a small FastAPI surface (`stromboli.api.create_app`):
 | Method & path             | Auth                 | Behaviour |
 |---------------------------|----------------------|-----------|
 | `GET /healthz`            | none                 | Returns `200 {"status": "ok"}` for liveness checks. |
-| `POST /stromboli/dispatch`| `X-Stromboli-Secret` | Validates the shared secret, returns `202 Accepted` immediately, and processes the build asynchronously. |
+| `POST /stromboli/dispatch`| `X-Stromboli-Secret` | Validates the shared secret and **enqueues** the build, returning `202 {"status":"queued","page_id":…,"position":N}`. Never dropped. |
+| `GET /stromboli/status`   | `X-Stromboli-Secret` | Returns the live queue snapshot: `{running, queued[], recent[]}`. |
+
+### Queue, run ledger, and "did it kick off?"
+
+Ticking *Ready* enqueues a build onto a durable **run ledger** (a SQLite file at
+`<WORKSPACE_ROOT>/.stromboli/runs.db`); a single background consumer drains it
+serially, one build at a time. This replaced the old serial worker that *dropped*
+any dispatch arriving while a build was running — now nothing is lost and the
+queue survives a restart.
+
+Two ways to see what's happening:
+
+- **In Notion** — the moment a task is accepted, Stromboli appends a note to it
+  (`🍕 queued (#2 in the queue)`, then `🛠️ building`), so ticking Ready gives
+  instant confirmation. The build's final outcome is written back as before.
+- **Via the status endpoint** — `curl -s -H "X-Stromboli-Secret: $SECRET"
+  $TUNNEL_PUBLIC_URL/stromboli/status | jq` shows the running build (and its
+  stage), the queue, and recent finishes.
+
+Each run moves through `queued → running → done | failed | skipped`, so a
+guard-declined dispatch (not Ready / not Agent / already claimed) is recorded as
+`skipped` rather than vanishing.
 
 ### `POST /stromboli/dispatch` contract
 

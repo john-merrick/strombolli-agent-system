@@ -83,6 +83,11 @@ class BuildConsumer:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    @property
+    def ledger(self) -> RunLedger:
+        """The run ledger this consumer drains (for status / position reads)."""
+        return self._ledger
+
     def enqueue(
         self, page_id: str, *, task_name: str | None = None, engine: str | None = None
     ) -> RunRecord:

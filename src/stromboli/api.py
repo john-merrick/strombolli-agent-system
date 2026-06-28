@@ -2,31 +2,39 @@
 
 A Notion automation (the *Ready checked* trigger) posts a task page id to
 ``POST /stromboli/dispatch`` through a Cloudflare Tunnel. The endpoint
-authenticates the request with a shared secret, returns ``202 Accepted``
-immediately, and processes the build asynchronously via a FastAPI background
-task so the caller (Notion) is never kept waiting.
+authenticates the request with a shared secret and **enqueues** the build,
+returning ``202 Accepted`` with its place in line — so a dispatch is never
+dropped (the old fire-and-forget background task was rejected outright when a
+build was already running) and the caller is never blocked on the build.
 
-The actual build pipeline (claim guard, worktree, Ralph loop, PR, write-back)
-is wired in later stories. To keep this layer independently testable, the
-build entrypoint is injected as ``process_task`` — tests pass a recording stub,
-and production wiring will pass the real worker.
+``GET /stromboli/status`` (same shared secret) returns the live queue snapshot —
+what's running, what's waiting, and what recently finished — so you can see what
+kicked off without reading logs.
+
+Both the enqueue entrypoint and the status provider are injected, so this layer
+is independently testable; production wiring passes the real queue consumer and
+run ledger.
 """
 
 from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from typing import Final
+from typing import Any, Final
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 #: HTTP header carrying the shared dispatch secret. Documented in the README
 #: alongside the Cloudflare Tunnel and Notion automation contract.
 SECRET_HEADER: Final = "X-Stromboli-Secret"
 
-#: Type of the injected build entrypoint: given a task page id, run the build.
-ProcessTask = Callable[[str], None]
+#: Injected enqueue entrypoint: given a task page id, record it on the queue and
+#: return its position in line (0 = next up).
+EnqueueFn = Callable[[str], int]
+
+#: Injected status provider: returns the current queue snapshot as plain data.
+StatusProvider = Callable[[], dict[str, Any]]
 
 
 class DispatchRequest(BaseModel):
@@ -40,27 +48,47 @@ class DispatchResponse(BaseModel):
 
     status: str
     page_id: str
+    #: How many builds are ahead of this one in the queue (0 = next up).
+    position: int
 
 
-def _noop_process_task(page_id: str) -> None:  # pragma: no cover - placeholder
-    """Default build entrypoint used until the real worker is wired in."""
+def _noop_enqueue(page_id: str) -> int:  # pragma: no cover - placeholder
+    """Default enqueue entrypoint used until the real consumer is wired in."""
+    return 0
+
+
+def _empty_status() -> dict[str, Any]:  # pragma: no cover - placeholder
+    return {"running": None, "queued": [], "recent": []}
 
 
 def create_app(
     *,
     dispatch_secret: str,
-    process_task: ProcessTask | None = None,
+    enqueue: EnqueueFn | None = None,
+    status_provider: StatusProvider | None = None,
+    on_startup: list[Callable[[], None]] | None = None,
+    on_shutdown: list[Callable[[], None]] | None = None,
 ) -> FastAPI:
     """Build the FastAPI application.
 
     :param dispatch_secret: the expected value of :data:`SECRET_HEADER`.
-    :param process_task: callable invoked (in the background) with the task page
-        id for each authenticated dispatch. Defaults to a no-op placeholder.
+    :param enqueue: callable invoked with the task page id for each authenticated
+        dispatch; returns the new run's queue position. Defaults to a no-op.
+    :param status_provider: returns the live queue snapshot for ``GET
+        /stromboli/status``. Defaults to an empty snapshot.
+    :param on_startup / on_shutdown: lifecycle hooks (used to start/stop the
+        background queue consumer).
     """
 
-    handler: ProcessTask = process_task or _noop_process_task
+    enqueue_fn: EnqueueFn = enqueue or _noop_enqueue
+    status_fn: StatusProvider = status_provider or _empty_status
 
-    app = FastAPI(title="Stromboli", version="0.1.0")
+    app = FastAPI(
+        title="Stromboli",
+        version="0.1.0",
+        on_startup=on_startup or [],
+        on_shutdown=on_shutdown or [],
+    )
 
     def require_secret(
         provided: str | None = Header(default=None, alias=SECRET_HEADER),
@@ -83,14 +111,20 @@ def create_app(
         response_model=DispatchResponse,
         dependencies=[Depends(require_secret)],
     )
-    def dispatch(
-        request: DispatchRequest,
-        background_tasks: BackgroundTasks,
-    ) -> DispatchResponse:
-        # Hand the build off to the background and acknowledge immediately so
-        # the Notion automation is not blocked on the build duration.
-        background_tasks.add_task(handler, request.page_id)
-        return DispatchResponse(status="accepted", page_id=request.page_id)
+    def dispatch(request: DispatchRequest) -> DispatchResponse:
+        # Enqueue synchronously (a fast ledger write) so the 202 truthfully means
+        # "queued" — the consumer builds it serially in the background.
+        position = enqueue_fn(request.page_id)
+        return DispatchResponse(
+            status="queued", page_id=request.page_id, position=position
+        )
+
+    @app.get(
+        "/stromboli/status",
+        dependencies=[Depends(require_secret)],
+    )
+    def status_endpoint() -> dict[str, Any]:
+        return status_fn()
 
     return app
 
@@ -99,5 +133,7 @@ __all__ = [
     "SECRET_HEADER",
     "DispatchRequest",
     "DispatchResponse",
+    "EnqueueFn",
+    "StatusProvider",
     "create_app",
 ]

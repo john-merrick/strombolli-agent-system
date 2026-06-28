@@ -21,11 +21,15 @@ from __future__ import annotations
 
 import logging
 from functools import partial
+from pathlib import Path
 
 from fastapi import FastAPI
 
 from stromboli.api import create_app
 from stromboli.breaker import BreakerConfig
+from stromboli.consumer import BuildConsumer
+from stromboli.ledger import RunLedger, status_snapshot
+from stromboli.notify import NotionAck
 from stromboli.notion import NotionTaskClient
 from stromboli.observability import build_tracer
 from stromboli.pipeline import BuildDeps, run_build
@@ -39,6 +43,8 @@ logger = logging.getLogger(__name__)
 #: Default per-task ceilings; override via the environment when tuning.
 DEFAULT_MAX_ITERATIONS = 25
 DEFAULT_MAX_COST_USD = 10.0
+#: The run-ledger SQLite file, under the workspace root.
+LEDGER_RELATIVE_PATH = Path(".stromboli") / "runs.db"
 
 
 def build_deps(settings: Settings) -> BuildDeps:
@@ -64,31 +70,56 @@ def build_deps(settings: Settings) -> BuildDeps:
     )
 
 
+def build_consumer(settings: Settings, deps: BuildDeps) -> BuildConsumer:
+    """Construct the run ledger + FIFO build consumer with the Notion ack.
+
+    The ledger lives under the workspace root so the queue survives restarts.
+    The serial :class:`Worker` guard is the consumer's build entrypoint, and a
+    :class:`NotionAck` listener writes queued/building notes back to the task.
+    """
+    ledger_path = Path(settings.workspace_root) / LEDGER_RELATIVE_PATH
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger = RunLedger(ledger_path)
+
+    worker = Worker(deps.notion, build=partial(run_build, deps=deps))
+    return BuildConsumer(
+        ledger,
+        worker.dispatch,
+        listener=NotionAck(deps.notion),
+    )
+
+
 def create_stromboli_app(settings: Settings | None = None) -> FastAPI:
     """Build the fully-wired FastAPI application.
 
     Loads settings (failing fast on any missing env var) unless supplied, builds
-    the real collaborator graph, and wires the serial worker's ``dispatch`` as
-    the dispatch endpoint's background task.
+    the real collaborator graph, and wires the dispatch endpoint to *enqueue*
+    onto the run ledger. A background consumer thread (started on app startup,
+    stopped on shutdown) drains the queue serially — so dispatches are never
+    dropped and ``GET /stromboli/status`` shows the live queue.
     """
     settings = settings or load_settings()
     deps = build_deps(settings)
-    worker = Worker(deps.notion, build=partial(run_build, deps=deps))
+    consumer = build_consumer(settings, deps)
 
-    def process_task(page_id: str) -> None:
-        # The endpoint's background task ignores the return value; the serial
-        # worker's DispatchOutcome is logged inside ``dispatch``.
-        worker.dispatch(page_id)
+    def enqueue(page_id: str) -> int:
+        run = consumer.enqueue(page_id)
+        return consumer.ledger.position(run.id)
 
     return create_app(
         dispatch_secret=settings.dispatch_shared_secret,
-        process_task=process_task,
+        enqueue=enqueue,
+        status_provider=lambda: status_snapshot(consumer.ledger),
+        on_startup=[consumer.start],
+        on_shutdown=[consumer.stop],
     )
 
 
 __all__ = [
     "DEFAULT_MAX_COST_USD",
     "DEFAULT_MAX_ITERATIONS",
+    "LEDGER_RELATIVE_PATH",
+    "build_consumer",
     "build_deps",
     "create_stromboli_app",
 ]

@@ -8,9 +8,11 @@ dispatch endpoint's background task.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from stromboli.app import build_deps, create_stromboli_app
+from stromboli.app import build_consumer, build_deps, create_stromboli_app
 from stromboli.pipeline import BuildDeps
 from stromboli.settings import Settings, load_settings
 
@@ -49,6 +51,20 @@ def test_graph_engine_selected_by_env_flag() -> None:
     settings = load_settings(_env_file=None, **_ENV, STROMBOLI_ENGINE="graph")
     deps = build_deps(settings)
     assert deps.engine == "graph"
+
+
+def test_build_consumer_creates_ledger_under_workspace(tmp_path: Path) -> None:
+    # Wiring only: the consumer's ledger lives under the workspace root so the
+    # queue survives restarts. (Enqueue durability is covered in test_consumer;
+    # we avoid enqueue here so the real NotionAck listener isn't invoked.)
+    env = {**_ENV, "WORKSPACE_ROOT": str(tmp_path)}
+    settings = load_settings(_env_file=None, **env)
+    deps = build_deps(settings)
+
+    consumer = build_consumer(settings, deps)
+
+    assert consumer.ledger.queued() == []
+    assert (tmp_path / ".stromboli" / "runs.db").exists()
 
 
 def test_app_healthcheck_and_secret_enforcement() -> None:
