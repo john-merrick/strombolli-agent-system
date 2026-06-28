@@ -20,6 +20,7 @@ import threading
 from collections.abc import Callable
 from typing import Protocol
 
+from stromboli import reporting
 from stromboli.ledger import RunLedger, RunRecord, RunState
 from stromboli.worker import DispatchOutcome
 
@@ -138,7 +139,10 @@ class BuildConsumer:
         logger.info("Building run %d (%s).", run.id, run.page_id)
         self._notify(lambda: self._listener.building(run))
         try:
-            outcome = self._process(run.page_id)
+            # Let the engine report fine-grained stages straight to the ledger
+            # for the duration of this build.
+            with reporting.using(lambda stage: self._ledger.set_stage(run.id, stage)):
+                outcome = self._process(run.page_id)
         except Exception as exc:  # noqa: BLE001 - one build must not kill the consumer
             error = f"{type(exc).__name__}: {exc}"
             logger.exception("Run %d (%s) failed.", run.id, run.page_id)

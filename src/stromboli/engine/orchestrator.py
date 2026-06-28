@@ -60,6 +60,7 @@ from stromboli.engine.state import (
 )
 from stromboli.engine.transcript import StepRecord, TranscriptRecorder, write_transcript
 from stromboli.loop import CCRunner
+from stromboli.reporting import report_stage
 from stromboli.writeback import BlockedItem
 
 logger = logging.getLogger(__name__)
@@ -358,6 +359,8 @@ class GraphEngine:
                 **hist,
             }
         )
+        # Surface the live stage (e.g. to the run ledger) for the status view.
+        report_stage(f"{action}: {outcome}")
 
     @staticmethod
     def _gate_text(gate_result: GateResult) -> str:

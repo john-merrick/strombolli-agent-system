@@ -332,6 +332,19 @@ def test_graph_result_conforms_to_build_result(tmp_path: Path) -> None:
     assert isinstance(result, BuildResult)
 
 
+def test_engine_reports_a_stage_per_step(tmp_path: Path) -> None:
+    from stromboli import reporting
+
+    agents = Agents(_plan("c"), WORKED, _verdict(True), _verdict(True))
+    stages: list[str] = []
+    with reporting.using(stages.append):
+        _engine(agents).run(tmp_path, spec=SPEC)
+    # One stage per graph step, each naming the action and its outcome.
+    assert any(s.startswith("RunPlanner") for s in stages)
+    assert any(s.startswith("RunVerifier") for s in stages)
+    assert stages[-1].startswith("Integrate")
+
+
 # --------------------------------------------------------------------------- #
 # Forensics: transcripts, enriched history, feedback trail                    #
 # --------------------------------------------------------------------------- #

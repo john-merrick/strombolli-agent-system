@@ -215,6 +215,29 @@ def test_composite_listener_isolates_a_failing_child(tmp_path: Path) -> None:
     ]
 
 
+def test_engine_reported_stages_reach_the_ledger(tmp_path: Path) -> None:
+    from stromboli import reporting
+
+    ledger = _ledger(tmp_path)
+    captured: list[str | None] = []
+
+    def process(page_id: str) -> DispatchOutcome:
+        # Simulate the engine emitting fine-grained stages mid-build.
+        reporting.report_stage("planner: 2 units")
+        reporting.report_stage("verifier (AC-001): met")
+        running = ledger.running()
+        captured.append(running.stage if running else None)
+        return DispatchOutcome.CLAIMED
+
+    consumer = BuildConsumer(ledger, process)
+    run = consumer.enqueue("a")
+    consumer.run_once()
+    # The last reported stage was written through to the ledger live.
+    assert captured == ["verifier (AC-001): met"]
+    # And it persists on the finished run.
+    assert ledger.get(run.id).stage == "verifier (AC-001): met"
+
+
 def test_consumer_thread_drains_the_queue(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     built = threading.Event()
