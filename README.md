@@ -132,6 +132,7 @@ The worker exposes a small FastAPI surface (`stromboli.api.create_app`):
 | `GET /healthz`            | none                 | Returns `200 {"status": "ok"}` for liveness checks. |
 | `POST /stromboli/dispatch`| `X-Stromboli-Secret` | Validates the shared secret and **enqueues** the build, returning `202 {"status":"queued","page_id":…,"position":N}`. Never dropped. |
 | `GET /stromboli/status`   | `X-Stromboli-Secret` | Returns the live queue snapshot: `{running, queued[], recent[]}`. |
+| `GET /stromboli/metrics`  | `X-Stromboli-Secret` | Returns throughput/timing/outcome rollups over recent runs (bottleneck view). |
 
 ### Queue, run ledger, and "did it kick off?"
 
@@ -148,7 +149,13 @@ Two ways to see what's happening:
   instant confirmation. The build's final outcome is written back as before.
 - **Via the status endpoint** — `curl -s -H "X-Stromboli-Secret: $SECRET"
   $TUNNEL_PUBLIC_URL/stromboli/status | jq` shows the running build (and its
-  stage), the queue, and recent finishes.
+  live stage, e.g. `RunVerifier: verdict on AC-002: NOT met`), the queue, and
+  recent finishes.
+- **Bottlenecks** — `…/stromboli/metrics | jq` rolls recent runs up into
+  build-duration and queue-wait timing (avg/max) plus the outcome breakdown
+  (done/failed/skipped), so you can see whether time is going to the queue or the
+  build, and the failure rate. (Per-stage breakdown — planner vs verifier — is a
+  future add; it needs per-step timestamps in the ledger.)
 
 Each run moves through `queued → running → done | failed | skipped`, so a
 guard-declined dispatch (not Ready / not Agent / already claimed) is recorded as

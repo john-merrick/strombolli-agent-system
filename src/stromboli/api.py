@@ -66,6 +66,7 @@ def create_app(
     dispatch_secret: str,
     enqueue: EnqueueFn | None = None,
     status_provider: StatusProvider | None = None,
+    metrics_provider: StatusProvider | None = None,
     on_startup: list[Callable[[], None]] | None = None,
     on_shutdown: list[Callable[[], None]] | None = None,
 ) -> FastAPI:
@@ -82,6 +83,7 @@ def create_app(
 
     enqueue_fn: EnqueueFn = enqueue or _noop_enqueue
     status_fn: StatusProvider = status_provider or _empty_status
+    metrics_fn: StatusProvider = metrics_provider or dict
 
     app = FastAPI(
         title="Stromboli",
@@ -125,6 +127,13 @@ def create_app(
     )
     def status_endpoint() -> dict[str, Any]:
         return status_fn()
+
+    @app.get(
+        "/stromboli/metrics",
+        dependencies=[Depends(require_secret)],
+    )
+    def metrics_endpoint() -> dict[str, Any]:
+        return metrics_fn()
 
     return app
 

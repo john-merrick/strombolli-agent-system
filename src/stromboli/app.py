@@ -28,7 +28,7 @@ from fastapi import FastAPI
 from stromboli.api import create_app
 from stromboli.breaker import BreakerConfig
 from stromboli.consumer import BuildConsumer, CompositeListener, LifecycleListener
-from stromboli.ledger import RunLedger, status_snapshot
+from stromboli.ledger import RunLedger, metrics_snapshot, status_snapshot
 from stromboli.notify import NotionAck, make_telegram_notifier
 from stromboli.notion import NotionTaskClient
 from stromboli.observability import build_tracer
@@ -125,6 +125,7 @@ def create_stromboli_app(settings: Settings | None = None) -> FastAPI:
         dispatch_secret=settings.dispatch_shared_secret,
         enqueue=enqueue,
         status_provider=lambda: status_snapshot(consumer.ledger),
+        metrics_provider=lambda: metrics_snapshot(consumer.ledger),
         on_startup=[consumer.start],
         on_shutdown=[consumer.stop],
     )

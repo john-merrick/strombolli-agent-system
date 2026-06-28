@@ -27,6 +27,7 @@ def _client(
     *,
     position: int = 0,
     status: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
 ) -> TestClient:
     """Build a test client whose enqueue records page ids and returns a position."""
 
@@ -38,6 +39,7 @@ def _client(
         dispatch_secret=SECRET,
         enqueue=enqueue,
         status_provider=lambda: status or {"running": None, "queued": [], "recent": []},
+        metrics_provider=lambda: metrics or {"sample_size": 0},
     )
     return TestClient(app)
 
@@ -123,6 +125,21 @@ def test_status_returns_the_queue_snapshot() -> None:
 
     assert response.status_code == 200
     assert response.json() == snapshot
+
+
+def test_metrics_requires_the_secret() -> None:
+    client = _client([])
+    assert client.get("/stromboli/metrics").status_code == 401
+
+
+def test_metrics_returns_the_rollup() -> None:
+    metrics = {"sample_size": 3, "outcomes": {"done": 2, "failed": 1}}
+    client = _client([], metrics=metrics)
+
+    response = client.get("/stromboli/metrics", headers={SECRET_HEADER: SECRET})
+
+    assert response.status_code == 200
+    assert response.json() == metrics
 
 
 def test_dispatch_rejects_body_without_page_id() -> None:

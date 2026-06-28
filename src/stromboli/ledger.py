@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -106,6 +107,55 @@ def status_snapshot(ledger: RunLedger, *, recent_limit: int = 10) -> dict[str, A
         "queued": [asdict(r) for r in ledger.queued()],
         "recent": [asdict(r) for r in ledger.recent(recent_limit)],
     }
+
+
+def _elapsed_seconds(start_iso: str | None, end_iso: str | None) -> float | None:
+    """Seconds between two ISO timestamps, or ``None`` if either is missing."""
+    if not start_iso or not end_iso:
+        return None
+    return (datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)).total_seconds()
+
+
+def _aggregate(values: Sequence[float]) -> dict[str, Any]:
+    """A tiny count / avg / max rollup for a list of durations."""
+    if not values:
+        return {"count": 0, "avg_seconds": None, "max_seconds": None}
+    return {
+        "count": len(values),
+        "avg_seconds": round(sum(values) / len(values), 2),
+        "max_seconds": round(max(values), 2),
+    }
+
+
+def compute_metrics(runs: Sequence[RunRecord]) -> dict[str, Any]:
+    """Roll finished runs up into throughput / timing / outcome metrics.
+
+    ``build_seconds`` (started → ended) surfaces how long builds take and
+    ``queue_wait_seconds`` (queued → started) how long they sit waiting — the two
+    bottleneck signals — alongside the outcome breakdown (done / failed /
+    skipped) for the failure rate.
+    """
+    build_times = [
+        s for r in runs if (s := _elapsed_seconds(r.started_at, r.ended_at)) is not None
+    ]
+    wait_times = [
+        s for r in runs if (s := _elapsed_seconds(r.queued_at, r.started_at)) is not None
+    ]
+    return {
+        "sample_size": len(runs),
+        "outcomes": dict(Counter(r.state.value for r in runs)),
+        "build_seconds": _aggregate(build_times),
+        "queue_wait_seconds": _aggregate(wait_times),
+    }
+
+
+def metrics_snapshot(ledger: RunLedger, *, window: int = 100) -> dict[str, Any]:
+    """Metrics over the last ``window`` finished runs, plus the live queue depth."""
+    snapshot = compute_metrics(ledger.recent(window))
+    running = ledger.running()
+    snapshot["queue_depth"] = len(ledger.queued())
+    snapshot["running"] = running.page_id if running else None
+    return snapshot
 
 
 def _row_to_record(row: sqlite3.Row) -> RunRecord:
@@ -275,5 +325,7 @@ __all__ = [
     "RunLedger",
     "RunRecord",
     "RunState",
+    "compute_metrics",
+    "metrics_snapshot",
     "status_snapshot",
 ]

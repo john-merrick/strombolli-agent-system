@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from stromboli.ledger import RunLedger, RunState
+from stromboli.ledger import (
+    RunLedger,
+    RunState,
+    compute_metrics,
+    metrics_snapshot,
+)
 
 
 def _clock() -> Callable[[], datetime]:
@@ -133,6 +138,50 @@ def test_get_missing_run_raises(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     with pytest.raises(KeyError):
         ledger.get(999)
+
+
+def test_compute_metrics_rolls_up_timing_and_outcomes(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)  # fake clock advances 1s per timestamp read
+    # Run A: queued@t0, started@t1 (wait 1s), ended@t2 (build 1s), DONE.
+    a = ledger.enqueue("a")
+    ledger.claim_next()
+    ledger.finish(a.id, RunState.DONE)
+    # Run B: same 1s wait / 1s build, FAILED.
+    b = ledger.enqueue("b")
+    ledger.claim_next()
+    ledger.finish(b.id, RunState.FAILED, error="boom")
+
+    metrics = compute_metrics(ledger.recent(100))
+    assert metrics["sample_size"] == 2
+    assert metrics["outcomes"] == {"done": 1, "failed": 1}
+    assert metrics["build_seconds"]["count"] == 2
+    assert metrics["build_seconds"]["avg_seconds"] == 1.0
+    assert metrics["queue_wait_seconds"]["count"] == 2
+
+
+def test_compute_metrics_handles_no_runs() -> None:
+    metrics = compute_metrics([])
+    assert metrics["sample_size"] == 0
+    assert metrics["build_seconds"] == {
+        "count": 0,
+        "avg_seconds": None,
+        "max_seconds": None,
+    }
+
+
+def test_metrics_snapshot_includes_queue_depth_and_running(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    done = ledger.enqueue("a")
+    ledger.claim_next()
+    ledger.finish(done.id, RunState.DONE)
+    ledger.enqueue("b")  # running next
+    ledger.claim_next()
+    ledger.enqueue("c")  # still queued
+
+    snapshot = metrics_snapshot(ledger)
+    assert snapshot["sample_size"] == 1
+    assert snapshot["queue_depth"] == 1
+    assert snapshot["running"] == "b"
 
 
 def test_ledger_persists_across_reopen(tmp_path: Path) -> None:
