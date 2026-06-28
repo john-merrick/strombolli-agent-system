@@ -1,0 +1,129 @@
+"""The build consumer — a real FIFO queue in front of the serial worker.
+
+Previously a dispatch arriving while a build ran was rejected and lost. Here the
+dispatch endpoint only *enqueues* (instant), and a single background consumer
+thread pulls the ledger's oldest queued run and builds it, one at a time. So
+ticking *Ready* on five tasks queues five builds — none dropped — and the queue
+survives a restart because it lives in the ledger, not in memory.
+
+The consumer wraps the existing :class:`~stromboli.worker.Worker` guard
+(injected as ``process``): it runs the build, maps the
+:class:`~stromboli.worker.DispatchOutcome` onto a terminal ledger state (built →
+``done``; guard-declined → ``skipped``; exception → ``failed``), and stamps the
+lifecycle so the status view and notifications have something to read.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Callable
+
+from stromboli.ledger import RunLedger, RunRecord, RunState
+from stromboli.worker import DispatchOutcome
+
+logger = logging.getLogger(__name__)
+
+#: A build entrypoint: given a task page id, run it and report the guard outcome.
+ProcessFn = Callable[[str], DispatchOutcome]
+
+#: The coarse stage stamped while a build runs (fine stages are a follow-up).
+STAGE_BUILDING = "building"
+
+#: How long the idle consumer waits between empty polls, in seconds.
+DEFAULT_POLL_INTERVAL = 0.5
+
+
+def _final_state(outcome: DispatchOutcome) -> RunState:
+    """Map a dispatch outcome onto the run's terminal ledger state."""
+    return RunState.DONE if outcome.built else RunState.SKIPPED
+
+
+class BuildConsumer:
+    """Drains the ledger's queue serially in a background thread."""
+
+    def __init__(
+        self,
+        ledger: RunLedger,
+        process: ProcessFn,
+        *,
+        poll_interval: float = DEFAULT_POLL_INTERVAL,
+    ) -> None:
+        self._ledger = ledger
+        self._process = process
+        self._poll_interval = poll_interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def enqueue(
+        self, page_id: str, *, task_name: str | None = None, engine: str | None = None
+    ) -> RunRecord:
+        """Record a dispatch as queued; the consumer will pick it up. Never drops."""
+        run = self._ledger.enqueue(page_id, task_name=task_name, engine=engine)
+        logger.info(
+            "Queued %s as run %d (position %d).",
+            page_id,
+            run.id,
+            self._ledger.position(run.id),
+        )
+        return run
+
+    def run_once(self) -> bool:
+        """Claim and build the next queued run. Returns ``False`` if none waiting."""
+        run = self._ledger.claim_next()
+        if run is None:
+            return False
+        self._build(run)
+        return True
+
+    def _build(self, run: RunRecord) -> None:
+        self._ledger.set_stage(run.id, STAGE_BUILDING)
+        logger.info("Building run %d (%s).", run.id, run.page_id)
+        try:
+            outcome = self._process(run.page_id)
+        except Exception as exc:  # noqa: BLE001 - one build must not kill the consumer
+            error = f"{type(exc).__name__}: {exc}"
+            logger.exception("Run %d (%s) failed.", run.id, run.page_id)
+            self._ledger.finish(run.id, RunState.FAILED, error=error)
+            return
+        self._ledger.finish(run.id, _final_state(outcome), outcome=outcome.value)
+        logger.info("Run %d (%s) finished: %s.", run.id, run.page_id, outcome.value)
+
+    # -- thread lifecycle ------------------------------------------------- #
+    def run_forever(self) -> None:
+        """Loop until :meth:`stop`, building queued runs and idling when empty."""
+        logger.info("Build consumer started.")
+        while not self._stop.is_set():
+            try:
+                did_work = self.run_once()
+            except Exception:  # noqa: BLE001 - defensive: never let the loop die
+                logger.exception("Consumer loop error; continuing.")
+                did_work = False
+            if not did_work:
+                self._stop.wait(self._poll_interval)
+        logger.info("Build consumer stopped.")
+
+    def start(self) -> None:
+        """Start the consumer in a daemon thread (idempotent)."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self.run_forever, name="stromboli-consumer", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        """Signal the consumer to stop and wait for the current build to drain."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+
+__all__ = [
+    "DEFAULT_POLL_INTERVAL",
+    "STAGE_BUILDING",
+    "BuildConsumer",
+    "ProcessFn",
+]
