@@ -156,6 +156,10 @@ Two ways to see what's happening:
   (done/failed/skipped), so you can see whether time is going to the queue or the
   build, and the failure rate. (Per-stage breakdown — planner vs verifier — is a
   future add; it needs per-step timestamps in the ledger.)
+- **From the worker box** — `uv run python -m stromboli.cli` prints the same
+  overview (running + stage, queue, recent, metrics) straight from the ledger —
+  no server, tunnel, or secrets needed (just `WORKSPACE_ROOT`, or
+  `STROMBOLI_LEDGER_PATH`).
 
 Each run moves through `queued → running → done | failed | skipped`, so a
 guard-declined dispatch (not Ready / not Agent / already claimed) is recorded as
