@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from typing import Protocol
 
 from stromboli.ledger import RunLedger, RunRecord, RunState
 from stromboli.worker import DispatchOutcome
@@ -26,6 +27,31 @@ logger = logging.getLogger(__name__)
 
 #: A build entrypoint: given a task page id, run it and report the guard outcome.
 ProcessFn = Callable[[str], DispatchOutcome]
+
+
+class LifecycleListener(Protocol):
+    """A sink notified as a run moves through its lifecycle.
+
+    Implementations are best-effort and must not raise into the consumer (the
+    consumer guards each call). The Notion acknowledgment is one listener; a
+    Telegram notifier is the natural next one — both plug in here.
+    """
+
+    def queued(self, run: RunRecord, position: int) -> None: ...
+
+    def building(self, run: RunRecord) -> None: ...
+
+    def finished(self, run: RunRecord) -> None: ...
+
+
+class NullListener:
+    """The default no-op listener."""
+
+    def queued(self, run: RunRecord, position: int) -> None: ...
+
+    def building(self, run: RunRecord) -> None: ...
+
+    def finished(self, run: RunRecord) -> None: ...
 
 #: The coarse stage stamped while a build runs (fine stages are a follow-up).
 STAGE_BUILDING = "building"
@@ -47,10 +73,12 @@ class BuildConsumer:
         ledger: RunLedger,
         process: ProcessFn,
         *,
+        listener: LifecycleListener | None = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
     ) -> None:
         self._ledger = ledger
         self._process = process
+        self._listener = listener or NullListener()
         self._poll_interval = poll_interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -60,12 +88,9 @@ class BuildConsumer:
     ) -> RunRecord:
         """Record a dispatch as queued; the consumer will pick it up. Never drops."""
         run = self._ledger.enqueue(page_id, task_name=task_name, engine=engine)
-        logger.info(
-            "Queued %s as run %d (position %d).",
-            page_id,
-            run.id,
-            self._ledger.position(run.id),
-        )
+        position = self._ledger.position(run.id)
+        logger.info("Queued %s as run %d (position %d).", page_id, run.id, position)
+        self._notify(lambda: self._listener.queued(run, position))
         return run
 
     def run_once(self) -> bool:
@@ -79,15 +104,25 @@ class BuildConsumer:
     def _build(self, run: RunRecord) -> None:
         self._ledger.set_stage(run.id, STAGE_BUILDING)
         logger.info("Building run %d (%s).", run.id, run.page_id)
+        self._notify(lambda: self._listener.building(run))
         try:
             outcome = self._process(run.page_id)
         except Exception as exc:  # noqa: BLE001 - one build must not kill the consumer
             error = f"{type(exc).__name__}: {exc}"
             logger.exception("Run %d (%s) failed.", run.id, run.page_id)
             self._ledger.finish(run.id, RunState.FAILED, error=error)
-            return
-        self._ledger.finish(run.id, _final_state(outcome), outcome=outcome.value)
-        logger.info("Run %d (%s) finished: %s.", run.id, run.page_id, outcome.value)
+        else:
+            self._ledger.finish(run.id, _final_state(outcome), outcome=outcome.value)
+            logger.info("Run %d (%s) finished: %s.", run.id, run.page_id, outcome.value)
+        self._notify(lambda: self._listener.finished(self._ledger.get(run.id)))
+
+    @staticmethod
+    def _notify(action: Callable[[], None]) -> None:
+        """Run a listener callback, swallowing failures so it can't break a build."""
+        try:
+            action()
+        except Exception:  # noqa: BLE001 - a listener must never break the consumer
+            logger.warning("Lifecycle listener raised; ignoring.", exc_info=True)
 
     # -- thread lifecycle ------------------------------------------------- #
     def run_forever(self) -> None:
@@ -125,5 +160,7 @@ __all__ = [
     "DEFAULT_POLL_INTERVAL",
     "STAGE_BUILDING",
     "BuildConsumer",
+    "LifecycleListener",
+    "NullListener",
     "ProcessFn",
 ]

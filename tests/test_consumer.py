@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from stromboli.consumer import STAGE_BUILDING, BuildConsumer
-from stromboli.ledger import RunLedger, RunState
+from stromboli.ledger import RunLedger, RunRecord, RunState
 from stromboli.worker import DispatchOutcome
 
 
@@ -125,6 +125,53 @@ def test_running_run_is_stamped_with_a_stage(tmp_path: Path) -> None:
 def test_run_once_on_empty_queue_returns_false(tmp_path: Path) -> None:
     consumer = BuildConsumer(_ledger(tmp_path), RecordingProcess())
     assert consumer.run_once() is False
+
+
+class RecordingListener:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+
+    def queued(self, run: RunRecord, position: int) -> None:
+        self.events.append(("queued", run.page_id))
+
+    def building(self, run: RunRecord) -> None:
+        self.events.append(("building", run.page_id))
+
+    def finished(self, run: RunRecord) -> None:
+        self.events.append(("finished", run.state.value))
+
+
+def test_listener_is_notified_through_the_lifecycle(tmp_path: Path) -> None:
+    listener = RecordingListener()
+    consumer = BuildConsumer(_ledger(tmp_path), RecordingProcess(), listener=listener)
+    consumer.enqueue("a")
+    consumer.run_once()
+    assert listener.events == [
+        ("queued", "a"),
+        ("building", "a"),
+        ("finished", "done"),
+    ]
+
+
+def test_listener_failure_never_breaks_the_build(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+
+    class BrokenListener:
+        def queued(self, run: RunRecord, position: int) -> None:
+            raise RuntimeError("listener down")
+
+        def building(self, run: RunRecord) -> None:
+            raise RuntimeError("listener down")
+
+        def finished(self, run: RunRecord) -> None:
+            raise RuntimeError("listener down")
+
+    process = RecordingProcess()
+    consumer = BuildConsumer(ledger, process, listener=BrokenListener())
+    run = consumer.enqueue("a")  # must not raise despite the broken listener
+    consumer.run_once()
+    assert process.calls == ["a"]
+    assert ledger.get(run.id).state is RunState.DONE
 
 
 def test_consumer_thread_drains_the_queue(tmp_path: Path) -> None:
