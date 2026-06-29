@@ -172,13 +172,16 @@ class WorktreeManager:
         wt_path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info("Adding worktree %s on branch %s", wt_path, branch)
+        # ``-B`` (not ``-b``) so a re-run of the same task — whose branch name is
+        # deterministic — resets the branch to the base rather than failing on
+        # "branch already exists". Clone-per-task semantics make this safe.
         self._run(
             [
                 "-C",
                 str(clone),
                 "worktree",
                 "add",
-                "-b",
+                "-B",
                 branch,
                 str(wt_path),
                 f"origin/{self._base}",

@@ -58,6 +58,38 @@ class GatewayError(RuntimeError):
     """The gateway call failed or returned an unusable / unparseable reply."""
 
 
+def _coerce_json(content: str) -> dict[str, Any]:
+    """Parse a JSON object from a model reply, tolerating fences / prose.
+
+    Models vary: some honor ``response_format`` and return bare JSON, others wrap
+    it in ```json fences or add a sentence. Try a direct parse, then a fenced
+    block, then the first balanced ``{…}`` span.
+    """
+    text = content.strip()
+    candidates: list[str] = []
+    if text:
+        candidates.append(text)
+    if "```" in text:
+        # Strip a leading ```json / ``` fence and the trailing fence.
+        inner = text.split("```", 2)
+        if len(inner) >= 2:
+            block = inner[1]
+            if block.lower().startswith("json"):
+                block = block[4:]
+            candidates.append(block.strip())
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise GatewayError(f"Gateway reply was not valid JSON: {content[:200]!r}")
+
+
 def _schema_instructions(schema: type[BaseModel]) -> str:
     """A system-prompt suffix telling the model to emit JSON for ``schema``."""
     return (
@@ -86,6 +118,20 @@ class LiteLLMGateway:
 
             self.completion = litellm.completion
 
+    @staticmethod
+    def _route(model: str) -> str:
+        """Force the call through the proxy's OpenAI-compatible path.
+
+        Without the ``litellm_proxy/`` prefix, litellm infers the provider from
+        the model name (e.g. ``claude-*`` → Anthropic's ``/v1/messages``), which
+        bypasses the proxy's routing/model-group mapping. The prefix makes it use
+        the proxy's ``/chat/completions`` so the model name is resolved by the
+        proxy, not by litellm's provider heuristic.
+        """
+        if model.startswith(("litellm_proxy/", "openai/")):
+            return model
+        return f"litellm_proxy/{model}"
+
     def structured(
         self, *, model: str, system: str, user: str, schema: type[T]
     ) -> T:
@@ -97,7 +143,7 @@ class LiteLLMGateway:
         ]
         try:
             response = self.completion(
-                model=model,
+                model=self._route(model),
                 messages=messages,
                 api_base=self.base_url,
                 api_key=self.api_key,
@@ -108,11 +154,7 @@ class LiteLLMGateway:
             raise GatewayError(f"Gateway completion failed: {exc}") from exc
 
         content = _extract_content(response)
-        try:
-            data = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise GatewayError(f"Gateway reply was not valid JSON: {exc}") from exc
-        return schema.model_validate(data)
+        return schema.model_validate(_coerce_json(content))
 
 
 def build_gateway(*, base_url: str, api_key: str) -> LiteLLMGateway:

@@ -55,6 +55,15 @@ def test_structured_raises_on_bad_json() -> None:
         gw.structured(model="m", system="s", user="u", schema=Spec)
 
 
+def test_structured_tolerates_fenced_and_prose_json() -> None:
+    fenced = 'Here is the spec:\n```json\n{"goal": "do x", "ambiguous": false}\n```\nDone.'
+    gw = LiteLLMGateway(
+        base_url="http://p", api_key="k", completion=lambda **_k: _response(fenced)
+    )
+    spec = gw.structured(model="m", system="s", user="u", schema=Spec)
+    assert spec.goal == "do x" and spec.ambiguous is False
+
+
 def test_structured_raises_on_completion_failure() -> None:
     def boom(**_k: Any) -> Any:
         raise RuntimeError("proxy down")
@@ -67,3 +76,28 @@ def test_structured_raises_on_completion_failure() -> None:
 def test_build_gateway_strips_trailing_slash() -> None:
     gw = build_gateway(base_url="http://proxy/", api_key="k")
     assert gw.base_url == "http://proxy"
+
+
+def test_model_routed_through_proxy_openai_path() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        return _response('{"goal": "g", "ambiguous": false}')
+
+    gw = LiteLLMGateway(base_url="http://p", api_key="k", completion=fake_completion)
+    gw.structured(model="claude-haiku-4-5", system="s", user="u", schema=Spec)
+    # Forced through the proxy's OpenAI-compatible path, not Anthropic-native.
+    assert captured["model"] == "litellm_proxy/claude-haiku-4-5"
+
+
+def test_already_prefixed_model_not_double_routed() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_completion(**kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        return _response('{"goal": "g", "ambiguous": false}')
+
+    gw = LiteLLMGateway(base_url="http://p", api_key="k", completion=fake_completion)
+    gw.structured(model="openai/gpt-4o", system="s", user="u", schema=Spec)
+    assert captured["model"] == "openai/gpt-4o"
