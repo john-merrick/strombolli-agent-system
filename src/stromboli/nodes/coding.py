@@ -114,7 +114,7 @@ def make_coding(
             if sandbox_result.passed
             else f"tests failed (exit {sandbox_result.exit_code})"
         )
-        return {
+        update: dict[str, object] = {
             "code_diff": run.diff,
             "test_results": [
                 TestResult(
@@ -127,6 +127,10 @@ def make_coding(
             "session_id": run.session_id,
             "status": "coding",
         }
+        # A revise re-entry is one completed outer-recursion cycle (PRD §6.6).
+        if state.verdict is not None and state.verdict.decision == "revise":
+            update["outer_iterations"] = state.outer_iterations + 1
+        return update
 
     return coding
 

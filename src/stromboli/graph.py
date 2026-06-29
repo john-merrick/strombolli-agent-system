@@ -142,7 +142,14 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
             )
         ),
     )
-    builder.add_node("verifier", _traced(deps.tracer, "verifier", make_verifier()))
+    builder.add_node(
+        "verifier",
+        _traced(
+            deps.tracer,
+            "verifier",
+            make_verifier(deps.gateway, model=deps.verifier_model),
+        ),
+    )
     builder.add_node(
         "pr", _traced(deps.tracer, "pr", make_pr(dry_run=deps.dry_run_pr))
     )

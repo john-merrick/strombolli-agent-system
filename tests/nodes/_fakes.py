@@ -36,6 +36,22 @@ def make_task(page_id: str = "page-1", *, spec: str = "build X",
     )
 
 
+class RoutingGateway:
+    """A gateway that returns a payload chosen by the requested schema name.
+
+    Lets one gateway serve both the Spec node (``schema=Spec``) and the verifier
+    (``schema=Verdict``) in a single graph run.
+    """
+
+    def __init__(self, payloads: dict[str, dict[str, object]]) -> None:
+        self._payloads = payloads
+        self.calls: list[tuple[str, str]] = []
+
+    def structured(self, *, model: str, system: str, user: str, schema: type[T]) -> T:
+        self.calls.append((schema.__name__, model))
+        return schema.model_validate(self._payloads[schema.__name__])
+
+
 class FakeNotion:
     """A Notion surface fake: serves one task and records appended notes."""
 
