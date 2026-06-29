@@ -132,15 +132,40 @@ class GitHubClient:
     def open_pull_request(
         self, repo: Any, *, head: str, base: str, title: str, body: str
     ) -> PullRequest:
-        """Open a PR on ``repo`` from ``head`` into ``base`` and return it."""
+        """Open a PR on ``repo`` from ``head`` into ``base`` and return it.
+
+        Idempotent: if a PR already exists for ``head`` (GitHub 422), reuse it
+        rather than failing — a re-run of the same task shouldn't crash.
+        """
         resp = self._client.post(
             f"/repos/{repo.full_name}/pulls",
             headers=self._headers,
             json={"title": title, "body": body, "head": head, "base": base},
         )
+        if resp.status_code == 422:
+            existing = self._find_open_pr(repo, head)
+            if existing is not None:
+                return existing
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return PullRequest(url=data["html_url"], number=int(data["number"]))
+
+    def _find_open_pr(self, repo: Any, head: str) -> PullRequest | None:
+        """Look up an already-open PR for ``head`` (``owner:branch``)."""
+        owner = getattr(repo, "owner", None)
+        head_q = f"{owner}:{head}" if owner else head
+        resp = self._client.get(
+            f"/repos/{repo.full_name}/pulls",
+            headers=self._headers,
+            params={"head": head_q, "state": "open"},
+        )
+        if resp.status_code != 200:
+            return None
+        items = resp.json()
+        if isinstance(items, list) and items:
+            pr = items[0]
+            return PullRequest(url=pr["html_url"], number=int(pr["number"]))
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -184,7 +209,10 @@ def commit_and_push(
     git(_git_in(worktree, "add", "-A"))
     if git(_git_in(worktree, "status", "--porcelain")).strip():
         git(_git_in(worktree, "commit", "-m", message))
-    git(_git_in(worktree, "push", "-u", "origin", worktree.branch))
+    # Force-push — the branch is a per-task, Stromboli-owned build branch
+    # (deterministic name only Stromboli writes); a stale remote one from a prior
+    # run must be replaced, not block the PR with a non-fast-forward rejection.
+    git(_git_in(worktree, "push", "-u", "--force", "origin", worktree.branch))
 
 
 # --------------------------------------------------------------------------- #

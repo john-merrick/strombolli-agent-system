@@ -75,6 +75,32 @@ def test_publish_pr_empty_diff_opens_nothing() -> None:
     assert result.pr_url is None
 
 
+def test_open_pr_reuses_existing_on_422() -> None:
+    import httpx
+
+    repo = Repo(owner="o", repo="r")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(422, json={"message": "A pull request already exists"})
+        # GET /pulls?head=o:branch&state=open → the existing PR
+        return httpx.Response(
+            200,
+            json=[{"html_url": "https://github.com/o/r/pull/3", "number": 3}],
+        )
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.github.com"
+    )
+    from stromboli.integrations.github import GitHubClient
+
+    gh = GitHubClient("tok", client=client)
+    pr = gh.open_pull_request(
+        repo, head="stromboli/x", base="main", title="t", body="b"
+    )
+    assert pr.url == "https://github.com/o/r/pull/3"  # reused, not crashed
+
+
 def test_publish_pr_opens_and_writes_back() -> None:
     opened: dict[str, Any] = {}
     written: dict[str, Any] = {}
