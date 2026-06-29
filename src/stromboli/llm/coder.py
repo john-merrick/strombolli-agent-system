@@ -149,6 +149,8 @@ class AgentCoder:
     max_budget_usd: float | None = None
     query_fn: QueryFn | None = None
     diff_fn: DiffFn | None = None
+    #: Called once per agent-loop turn as it streams — live visibility hook.
+    on_turn: Callable[[TurnRecord], None] | None = None
 
     def __post_init__(self) -> None:
         if self.query_fn is None:
@@ -243,11 +245,12 @@ class AgentCoder:
                     ]
                     if texts:
                         final_text = texts[-1]
-                    turns.append(
-                        TurnRecord(
-                            index=len(turns) + 1, tools=tools, usage=message.usage
-                        )
+                    record = TurnRecord(
+                        index=len(turns) + 1, tools=tools, usage=message.usage
                     )
+                    turns.append(record)
+                    if self.on_turn is not None:
+                        self.on_turn(record)
                     if message.session_id:
                         session_id = message.session_id
                     if message.error == "rate_limit":

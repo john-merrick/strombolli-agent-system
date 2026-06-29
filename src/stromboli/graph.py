@@ -41,7 +41,7 @@ from stromboli.integrations.notion import (
     resilient_append,
 )
 from stromboli.integrations.telegram import Notifier, NullNotifier
-from stromboli.llm.coder import Coder
+from stromboli.llm.coder import Coder, TurnRecord
 from stromboli.llm.gateway import Gateway
 from stromboli.memory import Memory
 from stromboli.nodes import (
@@ -367,6 +367,17 @@ def _provision_worktree(
         yield worktree
 
 
+def _log_coder_turn(record: TurnRecord) -> None:
+    """Live per-turn visibility: one log line as each SDK turn streams."""
+    out_tokens = (record.usage or {}).get("output_tokens")
+    logger.info(
+        "coding turn %d: tools=%s output_tokens=%s",
+        record.index,
+        list(record.tools),
+        out_tokens,
+    )
+
+
 def _deps_from_settings(settings: Settings) -> GraphDeps:
     """Assemble the production dependency graph from env-backed settings."""
     from stromboli.integrations.github import GitHubClient
@@ -394,6 +405,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         api_key=settings.anthropic_api_key,
         auth_mode=config.auth_mode,
         max_turns=config.budgets.max_inner_turns,
+        on_turn=_log_coder_turn,
     )
     return GraphDeps(
         budgets=config.budgets,
