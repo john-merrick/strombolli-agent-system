@@ -111,6 +111,9 @@ class LiteLLMGateway:
     api_key: str
     completion: CompletionFn | None = None
     temperature: float = 0.0
+    #: Cap on output tokens — must be high enough that a structured reply isn't
+    #: truncated mid-JSON (a truncated reply fails to parse).
+    max_tokens: int = 4096
 
     def __post_init__(self) -> None:
         if self.completion is None:
@@ -148,6 +151,7 @@ class LiteLLMGateway:
                 api_base=self.base_url,
                 api_key=self.api_key,
                 temperature=self.temperature,
+                max_tokens=self.max_tokens,
                 response_format={"type": "json_object"},
             )
         except Exception as exc:  # noqa: BLE001 - surface as a typed gateway error

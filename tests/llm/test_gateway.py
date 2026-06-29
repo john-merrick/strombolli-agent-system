@@ -43,6 +43,8 @@ def test_structured_parses_into_schema() -> None:
     assert captured["api_base"] == "http://proxy"
     assert captured["api_key"] == "k"
     assert captured["response_format"] == {"type": "json_object"}
+    # A generous output cap so structured replies aren't truncated mid-JSON.
+    assert captured["max_tokens"] >= 2048
     # The schema instructions are appended to the system prompt.
     assert "JSON schema" in captured["messages"][0]["content"]
 
