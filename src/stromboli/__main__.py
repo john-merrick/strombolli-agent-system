@@ -57,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     poll.add_argument(
         "--once", action="store_true", help="Drain the ready queue once and exit."
     )
+
+    dash = sub.add_parser("dashboard", help="Serve the live watchtower dashboard.")
+    dash.add_argument("--host", default="127.0.0.1")
+    dash.add_argument("--port", type=int, default=8765)
     return parser
 
 
@@ -85,7 +89,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "poll":
         return _poll()
 
+    if args.command == "dashboard":
+        return _dashboard(args.host, args.port)
+
     return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+def _dashboard(host: str, port: int) -> int:
+    """Serve the watchtower dashboard over the workspace's runs registry."""
+    import uvicorn
+
+    from stromboli.dashboard.app import create_dashboard
+    from stromboli.observability.runs import RunsRegistry
+    from stromboli.settings import load_settings
+
+    settings = load_settings()
+    registry = RunsRegistry(settings.workspace_root / ".stromboli" / "runs.db")
+    print(f"Stromboli watchtower → http://{host}:{port}")
+    uvicorn.run(create_dashboard(registry), host=host, port=port)
+    return 0
 
 
 def _poll() -> int:
