@@ -48,6 +48,13 @@ def test_apply_installs_gateway_and_drops_anthropic_key() -> None:
     assert "ANTHROPIC_API_KEY" not in env
 
 
+def test_base_url_trailing_slash_is_stripped() -> None:
+    env = claude_gateway_env(
+        base_url="http://localhost:4000/", api_key="k", model="claude-opus"
+    )
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:4000"
+
+
 def test_litellm_model_override_is_respected() -> None:
     apply = _settings(LITELLM_MODEL="claude-opus-4-8-custom-alias")
     env: dict[str, str] = {}

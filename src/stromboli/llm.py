@@ -25,7 +25,8 @@ from stromboli.settings import Settings
 def claude_gateway_env(*, base_url: str, api_key: str, model: str) -> dict[str, str]:
     """The Claude Code gateway env vars for a LiteLLM proxy pinned to ``model``."""
     return {
-        "ANTHROPIC_BASE_URL": base_url,
+        # Strip any trailing slash so the CLI forms ``…/v1/messages`` cleanly.
+        "ANTHROPIC_BASE_URL": base_url.rstrip("/"),
         "ANTHROPIC_AUTH_TOKEN": api_key,
         "ANTHROPIC_MODEL": model,
         # Pin the small/fast (background) model to the same model so every call,
