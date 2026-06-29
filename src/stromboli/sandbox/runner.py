@@ -27,7 +27,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 from stromboli.integrations.notion import Repo
 
@@ -223,6 +223,14 @@ _MAX_OUTPUT_CHARS: Final = 20_000
 CommandRunner = Callable[[Sequence[str], Path], tuple[int, str]]
 
 
+class TestSandbox(Protocol):
+    """The sandbox seam the coding node depends on (run the tests in isolation)."""
+
+    def run_tests(
+        self, worktree_path: str | Path, command: Sequence[str] = ...
+    ) -> SandboxResult: ...
+
+
 @dataclass(frozen=True)
 class SandboxResult:
     """The outcome of one sandboxed test run (PRD §6.4 — the inner-loop oracle)."""
@@ -312,6 +320,7 @@ __all__ = [
     "GitRunner",
     "SandboxResult",
     "SandboxRunner",
+    "TestSandbox",
     "Worktree",
     "WorktreeManager",
     "clone_url",

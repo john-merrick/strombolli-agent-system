@@ -32,6 +32,7 @@ from stromboli.config import (
 )
 from stromboli.integrations.notion import AppendGateway
 from stromboli.integrations.telegram import Notifier, NullNotifier
+from stromboli.llm.coder import Coder
 from stromboli.llm.gateway import Gateway
 from stromboli.nodes import (
     Node,
@@ -44,9 +45,11 @@ from stromboli.nodes import (
     make_spec,
     make_verifier,
 )
+from stromboli.nodes.coding import WorktreeFor
 from stromboli.nodes.intake import NotionReader
 from stromboli.nodes.router import CODING, HUMAN, PR, route_after_spec
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
+from stromboli.sandbox.runner import TestSandbox
 from stromboli.settings import Settings, load_settings
 from stromboli.state import Source, StromboliState
 
@@ -74,6 +77,11 @@ class GraphDeps:
     verifier_model: str = DEFAULT_VERIFIER_MODEL
     notion: NotionGateway | None = None
     notifier: Notifier = field(default_factory=NullNotifier)
+    #: Coder + sandbox + per-task worktree resolver (Phase 2). All three must be
+    #: set together to enable the real coding node; else it runs the stub.
+    coder: Coder | None = None
+    sandbox: TestSandbox | None = None
+    worktree_for: WorktreeFor | None = None
     #: PR node opens no real PR while true (Phase 0/1 default; live in Phase 6).
     dry_run_pr: bool = True
 
@@ -91,6 +99,11 @@ def _traced(tracer: BuildTracer, name: str, node: Node) -> Any:
             return node(state)
 
     return wrapped
+
+
+def _untraced(node: Node) -> Any:
+    """Pass a self-tracing node to ``add_node`` (returns ``Any``, see _traced)."""
+    return node
 
 
 def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
@@ -117,7 +130,18 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
             make_spec(deps.gateway, model=deps.reasoning_model),
         ),
     )
-    builder.add_node("coding", _traced(deps.tracer, "coding", make_coding()))
+    # The coding node self-traces (it nests the SDK turns as child spans, §8).
+    builder.add_node(
+        "coding",
+        _untraced(
+            make_coding(
+                deps.coder,
+                deps.sandbox,
+                deps.worktree_for,
+                tracer=deps.tracer,
+            )
+        ),
+    )
     builder.add_node("verifier", _traced(deps.tracer, "verifier", make_verifier()))
     builder.add_node(
         "pr", _traced(deps.tracer, "pr", make_pr(dry_run=deps.dry_run_pr))
