@@ -1,13 +1,13 @@
-"""Open the pull request and write it back to Notion (US-010).
+"""Open the pull request and write it back to Notion (PRD §6.7).
 
-When the Ralph loop finishes successfully the worker turns the worktree branch
-into a reviewable PR:
+Reached only behind the verifier gate (a ``pass``), the PR node turns the
+worktree branch into a reviewable PR:
 
 1. **Detect changes** — :func:`branch_has_changes` is true when the branch has
    commits ahead of ``main`` *or* uncommitted working-tree changes. An empty
    branch must never become an empty PR.
 2. **Commit & push** — any residual uncommitted changes are committed (the
-   in-worktree agent commits per item, so this is belt-and-braces) and the
+   coding node's agent commits as it works, so this is belt-and-braces) and the
    branch is pushed.
 3. **Open the PR** — against ``main`` with a title/body derived from the task
    and its Spec, via the GitHub REST API.
@@ -15,7 +15,7 @@ into a reviewable PR:
 
 When there are no changes, :func:`publish_pr` opens no PR and returns
 ``empty_diff=True``; the caller routes the task to ``Review`` with an
-explanatory note (US-011 routing / US-012 write-back).
+explanatory note (PRD §6.7).
 
 Git and GitHub are reached through injected seams — a stdout-returning git
 runner and an ``httpx`` client — so the orchestration is unit-testable without
