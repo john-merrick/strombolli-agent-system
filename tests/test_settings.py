@@ -21,7 +21,8 @@ VALID_ENV = {
     "LANGFUSE_HOST": "https://cloud.langfuse.com",
     "TUNNEL_PUBLIC_URL": "https://tunnel.example.com",
     "WORKSPACE_ROOT": "/tmp/stromboli-workspaces",
-    "ANTHROPIC_API_KEY": "sk-ant-789",
+    "LITELLM_BASE_URL": "https://litellm.example.com",
+    "LITELLM_API_KEY": "sk-litellm-789",
     "DISPATCH_SHARED_SECRET": "shared-secret",
 }
 
@@ -52,7 +53,10 @@ def test_loads_all_values_with_correct_types(
     assert settings.langfuse_secret_key == "sk-lf-456"
     assert settings.langfuse_host == "https://cloud.langfuse.com"
     assert settings.tunnel_public_url == "https://tunnel.example.com"
-    assert settings.anthropic_api_key == "sk-ant-789"
+    assert settings.litellm_base_url == "https://litellm.example.com"
+    assert settings.litellm_api_key == "sk-litellm-789"
+    # The build model defaults to Opus when LITELLM_MODEL is unset.
+    assert settings.litellm_model == "claude-opus-4-8"
     assert settings.dispatch_shared_secret == "shared-secret"
     # WORKSPACE_ROOT is coerced to a Path.
     assert settings.workspace_root == Path("/tmp/stromboli-workspaces")
@@ -79,14 +83,14 @@ def test_multiple_missing_vars_all_named(
     env = {
         k: v
         for k, v in VALID_ENV.items()
-        if k not in {"NOTION_TOKEN", "ANTHROPIC_API_KEY"}
+        if k not in {"NOTION_TOKEN", "LITELLM_API_KEY"}
     }
     _set(monkeypatch, env)
 
     with pytest.raises(MissingSettingsError) as excinfo:
         load_settings(_env_file=None)
 
-    assert set(excinfo.value.missing) == {"NOTION_TOKEN", "ANTHROPIC_API_KEY"}
+    assert set(excinfo.value.missing) == {"NOTION_TOKEN", "LITELLM_API_KEY"}
 
 
 def test_reads_values_from_env_file(

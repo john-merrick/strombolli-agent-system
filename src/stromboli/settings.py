@@ -23,7 +23,8 @@ REQUIRED_ENV_VARS: tuple[str, ...] = (
     "LANGFUSE_HOST",
     "TUNNEL_PUBLIC_URL",
     "WORKSPACE_ROOT",
-    "ANTHROPIC_API_KEY",
+    "LITELLM_BASE_URL",
+    "LITELLM_API_KEY",
     "DISPATCH_SHARED_SECRET",
 )
 
@@ -57,7 +58,11 @@ class Settings(BaseSettings):
     langfuse_host: str = Field(alias="LANGFUSE_HOST")
     tunnel_public_url: str = Field(alias="TUNNEL_PUBLIC_URL")
     workspace_root: Path = Field(alias="WORKSPACE_ROOT")
-    anthropic_api_key: str = Field(alias="ANTHROPIC_API_KEY")
+    #: The build agent (``claude -p``) is routed through a LiteLLM proxy rather
+    #: than the Anthropic API directly: a base URL + virtual key, pinned to Opus.
+    litellm_base_url: str = Field(alias="LITELLM_BASE_URL")
+    litellm_api_key: str = Field(alias="LITELLM_API_KEY")
+    litellm_model: str = Field(default="claude-opus-4-8", alias="LITELLM_MODEL")
     dispatch_shared_secret: str = Field(alias="DISPATCH_SHARED_SECRET")
 
     #: Which build engine to use. Optional; defaults to the legacy Ralph loop so

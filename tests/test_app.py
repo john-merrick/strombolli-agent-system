@@ -24,7 +24,8 @@ _ENV = {
     "LANGFUSE_HOST": "https://cloud.langfuse.com",
     "TUNNEL_PUBLIC_URL": "https://stromboli.example.com",
     "WORKSPACE_ROOT": "/tmp/stromboli-workspace",
-    "ANTHROPIC_API_KEY": "ak",
+    "LITELLM_BASE_URL": "https://litellm.example.com",
+    "LITELLM_API_KEY": "sk-litellm",
     "DISPATCH_SHARED_SECRET": "s3cret",
 }
 

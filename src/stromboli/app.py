@@ -29,6 +29,7 @@ from stromboli.api import create_app
 from stromboli.breaker import BreakerConfig
 from stromboli.consumer import BuildConsumer, CompositeListener, LifecycleListener
 from stromboli.ledger import RunLedger, metrics_snapshot, status_snapshot
+from stromboli.llm import apply_claude_gateway_env
 from stromboli.notify import NotionAck, make_telegram_notifier
 from stromboli.notion import NotionTaskClient
 from stromboli.observability import build_tracer
@@ -114,6 +115,9 @@ def create_stromboli_app(settings: Settings | None = None) -> FastAPI:
     dropped and ``GET /stromboli/status`` shows the live queue.
     """
     settings = settings or load_settings()
+    # Route the build agent through the LiteLLM proxy (pinned to Opus) before any
+    # build can spawn ``claude``; the subprocess inherits this process env.
+    apply_claude_gateway_env(settings)
     deps = build_deps(settings)
     consumer = build_consumer(settings, deps)
 
