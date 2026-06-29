@@ -1,0 +1,13 @@
+{
+  "name": "spec_eval",
+  "metric": "ambiguity_detection_accuracy",
+  "threshold": 0.75,
+  "cases": [
+    {"id": "clear-1", "inputs": {"raw_request": "Add a --verbose flag to the CLI that prints debug logs to stderr."}, "expected": {"ambiguous": false}},
+    {"id": "clear-2", "inputs": {"raw_request": "Fix the off-by-one in paginate() so the last page is included; add a test."}, "expected": {"ambiguous": false}},
+    {"id": "clear-3", "inputs": {"raw_request": "Rename the function `calc` to `calculate_total` across the repo and update call sites."}, "expected": {"ambiguous": false}},
+    {"id": "vague-1", "inputs": {"raw_request": "Make the app better."}, "expected": {"ambiguous": true}},
+    {"id": "vague-2", "inputs": {"raw_request": "Improve performance somewhere."}, "expected": {"ambiguous": true}},
+    {"id": "vague-3", "inputs": {"raw_request": "Handle the edge cases."}, "expected": {"ambiguous": true}}
+  ]
+}

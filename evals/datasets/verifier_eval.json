@@ -1,0 +1,13 @@
+{
+  "name": "verifier_eval",
+  "metric": "agreement_with_human_labels",
+  "threshold": 0.7,
+  "cases": [
+    {"id": "pass-real", "inputs": {"goal": "add --verbose flag", "acceptance_criteria": ["prints debug to stderr when set"], "diff": "+ if args.verbose:\n+     logging.basicConfig(level=DEBUG)", "tests_passed": true, "test_summary": "asserts stderr contains DEBUG when --verbose"}, "expected": {"decision": "pass"}},
+    {"id": "weak-tests", "inputs": {"goal": "add --verbose flag", "acceptance_criteria": ["prints debug to stderr when set"], "diff": "+ if args.verbose:\n+     pass", "tests_passed": true, "test_summary": "asserts the program exits 0"}, "expected": {"decision": "revise"}},
+    {"id": "missing-criterion", "inputs": {"goal": "paginate results, last page included", "acceptance_criteria": ["last page is returned", "empty result returns one empty page"], "diff": "+ return items[start:start+size]", "tests_passed": true, "test_summary": "tests the happy path only"}, "expected": {"decision": "revise"}},
+    {"id": "broken", "inputs": {"goal": "fix crash on empty input", "acceptance_criteria": ["empty input returns []"], "diff": "+ return data[0]", "tests_passed": false, "test_summary": "IndexError on empty input"}, "expected": {"decision": "revise"}},
+    {"id": "needs-human", "inputs": {"goal": "migrate the auth provider", "acceptance_criteria": ["all users can still log in"], "diff": "+ # TODO: cannot verify without prod credentials", "tests_passed": false, "test_summary": "integration tests skipped — no credentials"}, "expected": {"decision": "escalate"}},
+    {"id": "pass-real-2", "inputs": {"goal": "rename calc to calculate_total", "acceptance_criteria": ["no references to calc remain", "tests pass"], "diff": "- def calc(x):\n+ def calculate_total(x):", "tests_passed": true, "test_summary": "grep finds no `calc(` and suite is green"}, "expected": {"decision": "pass"}}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "coding_eval",
+  "metric": "test_pass_rate",
+  "threshold": 0.5,
+  "cases": [
+    {"id": "fizzbuzz", "inputs": {"goal": "implement fizzbuzz(n) returning the classic sequence as a list of strings"}, "expected": {"should_pass": true}},
+    {"id": "reverse", "inputs": {"goal": "implement reverse_words(s) that reverses word order, collapsing runs of spaces"}, "expected": {"should_pass": true}},
+    {"id": "paginate", "inputs": {"goal": "implement paginate(items, size) yielding pages; the final partial page is included"}, "expected": {"should_pass": true}},
+    {"id": "impossible", "inputs": {"goal": "prove the Collatz conjecture in code and assert it for all integers"}, "expected": {"should_pass": false}}
+  ]
+}
