@@ -79,10 +79,10 @@ def test_notion_task_reaches_verified_pr_with_writeback() -> None:
     # Verified PR opened end-to-end.
     assert final.status == "done"
     assert final.pr_url == "https://github.com/o/r/pull/9"
-    # Notion: PR url written back, status routed to Review (no auto-merge),
-    # and a feedback summary appended.
+    # Notion lifecycle: To do → Working on (intake) → Complete (verified PR),
+    # PR url written back, and a feedback summary appended.
     assert notion.pr_writes == [("pg-1", "https://github.com/o/r/pull/9")]
-    assert ("pg-1", "Review") in notion.status_writes
+    assert notion.status_writes == [("pg-1", "Working on"), ("pg-1", "Complete")]
     assert any("build summary" in md for _pid, md in notion.appended)
     # Telegram "done" was pushed.
     assert any("Done" in p for p in pushes)

@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from stromboli.config import (
@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     # -- Telegram notifications (optional) ---------------------------------- #
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
+
+    @field_validator(
+        "workspace_root", "chroma_persist_dir", "checkpoint_db_path", mode="after"
+    )
+    @classmethod
+    def _expand_user(cls, value: Path) -> Path:
+        """Expand a leading ``~`` so ``~/foo`` resolves to the home directory."""
+        return value.expanduser()
 
     @model_validator(mode="after")
     def check_coder_auth(self) -> Settings:

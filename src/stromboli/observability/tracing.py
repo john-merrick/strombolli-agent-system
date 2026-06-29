@@ -97,14 +97,22 @@ def traced_node(
 
 
 class _LangfuseSpan(Span):
-    """A Langfuse span/observation wrapper (best-effort; never raises out)."""
+    """A Langfuse observation wrapper (best-effort; never raises out).
+
+    Targets the Langfuse v3/v4 OTEL-style API: observations are created with
+    ``start_observation`` and nest children the same way.
+    """
 
     def __init__(self, handle: Any) -> None:
         self._handle = handle
 
     def child(self, name: str, *, metadata: dict[str, Any] | None = None) -> Span:
         try:
-            return _LangfuseSpan(self._handle.span(name=name, metadata=metadata or {}))
+            return _LangfuseSpan(
+                self._handle.start_observation(
+                    name=name, as_type="span", metadata=metadata or {}
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Langfuse child span failed: %s", exc)
             return Span()
@@ -123,48 +131,57 @@ class _LangfuseSpan(Span):
 
 
 class LangfuseTracer(BuildTracer):
-    """Sends the per-task trace to Langfuse via the (lazily imported) SDK."""
+    """Sends the per-task trace to Langfuse via the (lazily imported) SDK.
+
+    One root observation per task carries the ``task_id`` (so node observations
+    nest under a single trace); every call is best-effort.
+    """
 
     def __init__(self, *, public_key: str, secret_key: str, host: str) -> None:
-        # Lazy import: ``langfuse`` is an optional dependency. The client is held
-        # as ``Any`` because the SDK surface varies across major versions; every
-        # call is best-effort. Targets the v2 ``trace`` API — verify against the
-        # deployed SDK version when wiring it live.
         import importlib
 
         langfuse_mod = importlib.import_module("langfuse")
         self._client: Any = langfuse_mod.Langfuse(
             public_key=public_key, secret_key=secret_key, host=host
         )
-        self._trace: Any = None
+        self._root: Any = None
 
     def start(self, *, task_id: str, name: str) -> None:
         try:
-            self._trace = self._client.trace(name=name, metadata={"task_id": task_id})
+            self._root = self._client.start_observation(
+                name=name, as_type="span", metadata={"task_id": task_id}
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Langfuse trace start failed: %s", exc)
-            self._trace = None
+            self._root = None
 
     def node(self, name: str, *, metadata: dict[str, Any] | None = None) -> Span:
-        if self._trace is None:
-            return Span()
+        parent = self._root if self._root is not None else self._client
         try:
-            return _LangfuseSpan(self._trace.span(name=name, metadata=metadata or {}))
+            return _LangfuseSpan(
+                parent.start_observation(
+                    name=name, as_type="span", metadata=metadata or {}
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Langfuse node span failed: %s", exc)
             return Span()
 
     def tag(self, *tags: str) -> None:
-        if self._trace is not None:
+        # v4 has no clean trace-tag API outside a current-observation context;
+        # attach tags to the root observation's metadata, best-effort.
+        if self._root is not None:
             try:
-                self._trace.update(tags=list(tags))
+                self._root.update(metadata={"tags": list(tags)})
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Langfuse tag failed: %s", exc)
 
     def finish(self, *, error: str | None = None) -> None:
         try:
-            if self._trace is not None and error is not None:
-                self._trace.update(level="ERROR", status_message=error)
+            if self._root is not None:
+                if error is not None:
+                    self._root.update(level="ERROR", status_message=error)
+                self._root.end()
             self._client.flush()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Langfuse finish failed: %s", exc)

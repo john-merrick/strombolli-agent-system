@@ -14,16 +14,22 @@ task, or ``{"action": "abort"}`` to give up — otherwise the task is marked
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 from langgraph.types import interrupt
 
-from stromboli.integrations.notion import AppendGateway, resilient_append
+from stromboli.integrations.notion import STATUS_REVIEW, AppendGateway, resilient_append
 from stromboli.integrations.telegram import Notifier, NullNotifier
 from stromboli.nodes.intake import Node
 from stromboli.state import StromboliState
 
 logger = logging.getLogger(__name__)
+
+
+class EscalationNotion(AppendGateway, Protocol):
+    """Append a note + flag the task for human attention (Review)."""
+
+    def update_task(self, page_id: str, *, status: str | None = ...) -> None: ...
 
 
 def _reason(state: StromboliState) -> str:
@@ -38,7 +44,7 @@ def _reason(state: StromboliState) -> str:
 def make_human(
     *,
     notifier: Notifier | None = None,
-    notion: AppendGateway | None = None,
+    notion: EscalationNotion | None = None,
 ) -> Node:
     """Build the human-interrupt node."""
     notifier = notifier or NullNotifier()
@@ -50,6 +56,11 @@ def make_human(
             resilient_append(
                 notion, state.task_id, f"🚨 **Stromboli needs you:** {reason}"
             )
+            # Flag the task for a human on the board (best-effort).
+            try:
+                notion.update_task(state.task_id, status=STATUS_REVIEW)
+            except Exception as exc:  # noqa: BLE001 - status write must not crash
+                logger.warning("Could not set Review for %s: %s", state.task_id, exc)
         logger.info("Interrupting for human input on task %s.", state.task_id)
 
         # Pauses here until the caller resumes with Command(resume=<payload>).

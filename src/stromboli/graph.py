@@ -303,8 +303,9 @@ def _finalize(state: StromboliState, deps: GraphDeps) -> None:
         )
         resilient_append(deps.notion, state.task_id, summary)
         try:
-            # No auto-merge — a human reviews the PR (PRD success criteria).
-            deps.notion.update_task(state.task_id, status="Review")
+            # Agent's work is done (a verified PR is open for human merge) →
+            # Complete on the board (To do → Working on → Complete).
+            deps.notion.update_task(state.task_id, status="Complete")
         except Exception as exc:  # noqa: BLE001 - write-back must never crash a run
             logger.warning("Notion status write failed for %s: %s", state.task_id, exc)
     deps.notifier.done(state.task_id, state.pr_url)

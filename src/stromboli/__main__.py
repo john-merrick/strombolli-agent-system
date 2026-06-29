@@ -37,8 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     run = sub.add_parser("run", help="Run one task through the graph.")
-    run.add_argument("--task", required=True, help="The raw task request text.")
-    run.add_argument("--task-id", default=None, help="Override the generated id.")
+    run.add_argument(
+        "--task",
+        default="",
+        help="The raw task request text (required for --source cli; for "
+        "--source notion it is hydrated from the task page).",
+    )
+    run.add_argument("--task-id", default=None, help="Notion page id / run id.")
     run.add_argument(
         "--source",
         default="cli",
@@ -60,6 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "run":
+        if args.source == "cli" and not args.task:
+            print("error: --task is required for --source cli", file=sys.stderr)
+            return 2
+        if args.source == "notion" and not args.task_id:
+            print("error: --task-id is required for --source notion", file=sys.stderr)
+            return 2
         # Imported lazily so `--help` doesn't pull in LangGraph / settings.
         from stromboli.graph import run_task
 
