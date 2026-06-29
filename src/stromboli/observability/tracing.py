@@ -203,7 +203,15 @@ def build_tracer(
     if not (enabled and public_key and secret_key and host):
         return NullTracer()
     try:
-        return LangfuseTracer(public_key=public_key, secret_key=secret_key, host=host)
+        tracer = LangfuseTracer(
+            public_key=public_key, secret_key=secret_key, host=host
+        )
+        # Validate credentials up front: if they don't authorize, degrade to the
+        # no-op now rather than emitting a 401 on every span export (PRD §8).
+        if not tracer._client.auth_check():
+            logger.warning("Langfuse credentials rejected; tracing disabled.")
+            return NullTracer()
+        return tracer
     except Exception as exc:  # noqa: BLE001 - degrade rather than crash
         logger.warning("Langfuse unavailable (%s); tracing disabled.", exc)
         return NullTracer()

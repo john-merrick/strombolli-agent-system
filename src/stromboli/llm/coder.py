@@ -117,6 +117,12 @@ class CoderRun:
         return (not self.is_error) and self.subtype in CLEAN_SUBTYPES
 
 
+async def _user_stream(text: str) -> AsyncIterator[dict[str, Any]]:
+    """One-shot streaming-input prompt: the SDK requires an AsyncIterable when a
+    ``can_use_tool`` callback is set (string prompts disable the callback)."""
+    yield {"type": "user", "message": {"role": "user", "content": text}}
+
+
 def _git_diff(root: Path) -> str:
     """Default :data:`DiffFn`: the worktree's tracked changes against HEAD."""
     proc = subprocess.run(  # noqa: S603
@@ -203,7 +209,9 @@ class AgentCoder:
         rate_limit_reset: str | None = None
         rate_limited = False
 
-        async for message in self.query_fn(prompt=prompt, options=options):
+        async for message in self.query_fn(
+            prompt=_user_stream(prompt), options=options
+        ):
             if isinstance(message, AssistantMessage):
                 tools = tuple(
                     b.name for b in message.content if isinstance(b, ToolUseBlock)
