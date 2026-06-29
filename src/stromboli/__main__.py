@@ -1,0 +1,71 @@
+"""Stromboli CLI: ``python -m stromboli run --task "<text>"``.
+
+The runtime is a per-task graph invocation, not a server (PRD §10 Phase 0 DoD).
+``run`` builds the initial state from the CLI args and drives one task through
+the compiled LangGraph, printing the terminal status. Logging goes to stderr;
+set ``STROMBOLI_LOG_FILE`` to also persist it (with tracebacks) to a file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def _build_log_handlers(log_file: str | None) -> list[logging.Handler]:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    return handlers
+
+
+def configure_logging() -> None:
+    """Configure root logging from ``STROMBOLI_LOG_LEVEL`` / ``STROMBOLI_LOG_FILE``."""
+    logging.basicConfig(
+        level=os.environ.get("STROMBOLI_LOG_LEVEL", "INFO"),
+        format=LOG_FORMAT,
+        handlers=_build_log_handlers(os.environ.get("STROMBOLI_LOG_FILE")),
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="stromboli")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    run = sub.add_parser("run", help="Run one task through the graph.")
+    run.add_argument("--task", required=True, help="The raw task request text.")
+    run.add_argument("--task-id", default=None, help="Override the generated id.")
+    run.add_argument(
+        "--source",
+        default="cli",
+        choices=["cli", "notion", "telegram"],
+        help="The intake source (default: cli).",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_logging()
+    args = build_parser().parse_args(argv)
+
+    if args.command == "run":
+        # Imported lazily so `--help` doesn't pull in LangGraph / settings.
+        from stromboli.graph import run_task
+
+        final = run_task(
+            args.task, source=args.source, task_id=args.task_id
+        )
+        print(f"task {final.task_id}: {final.status}")
+        if final.pr_url:
+            print(f"PR: {final.pr_url}")
+        return 0
+
+    return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+if __name__ == "__main__":
+    sys.exit(main())

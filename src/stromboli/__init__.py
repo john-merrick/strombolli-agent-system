@@ -6,6 +6,7 @@ a LangGraph ``StateGraph`` with per-node observability and a three-tier memory.
 """
 
 from stromboli.config import Budgets, Config, Models, from_settings
+from stromboli.graph import GraphDeps, build_graph, run_task
 from stromboli.settings import MissingSettingsError, Settings, load_settings
 from stromboli.state import (
     Spec,
@@ -17,6 +18,7 @@ from stromboli.state import (
 __all__ = [
     "Budgets",
     "Config",
+    "GraphDeps",
     "MissingSettingsError",
     "Models",
     "Settings",
@@ -24,6 +26,8 @@ __all__ = [
     "StromboliState",
     "TestResult",
     "Verdict",
+    "build_graph",
     "from_settings",
     "load_settings",
+    "run_task",
 ]
