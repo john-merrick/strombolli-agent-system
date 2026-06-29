@@ -243,7 +243,11 @@ class NotionTaskClient:
         client: httpx.Client | None = None,
     ) -> None:
         self._token = token
-        self._client = client or httpx.Client(base_url=self.BASE_URL)
+        # A generous timeout — Notion can be slow, and a short default (5s) makes
+        # the autonomous poller flake with ReadTimeouts.
+        self._client = client or httpx.Client(
+            base_url=self.BASE_URL, timeout=30.0
+        )
         self._headers = {
             "Authorization": f"Bearer {token}",
             "Notion-Version": self.NOTION_VERSION,
