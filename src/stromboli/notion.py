@@ -132,8 +132,10 @@ def parse_task(page: dict[str, Any]) -> Task:
     """
     props: dict[str, Any] = page.get("properties", {})
 
+    # The "Status" property may be a Notion select OR the dedicated status type;
+    # tolerate both so the field parses regardless of how the DB was defined.
     status_prop = props.get(PROP_STATUS) or {}
-    status_value = status_prop.get("status")
+    status_value = status_prop.get("select") or status_prop.get("status")
     status = status_value.get("name") if status_value else None
 
     relation = (props.get(PROP_PROJECT) or {}).get("relation") or []
@@ -280,7 +282,8 @@ class NotionTaskClient:
                     f"Unknown status {status!r}; must be one of "
                     f"{sorted(VALID_STATUSES)}"
                 )
-            properties[PROP_STATUS] = {"status": {"name": status}}
+            # The tasks DB defines "Status" as a select property.
+            properties[PROP_STATUS] = {"select": {"name": status}}
         if not isinstance(pr_url, _Unset):
             properties[PROP_PR] = {"url": pr_url}
         if not isinstance(cost, _Unset):

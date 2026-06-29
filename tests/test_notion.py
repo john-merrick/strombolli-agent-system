@@ -37,7 +37,7 @@ def _task_page(**overrides: Any) -> dict[str, Any]:
             "type": "relation",
             "relation": [{"id": "project-page-id-1"}],
         },
-        "Status": {"type": "status", "status": {"name": "To do"}},
+        "Status": {"type": "select", "select": {"name": "To do"}},
         "Spec": {
             "type": "rich_text",
             "rich_text": [
@@ -247,7 +247,7 @@ def test_update_task_maps_status_to_exact_label_without_creating_options() -> No
     assert captured["path"] == "/v1/pages/task-page-id"
     props = captured["body"]["properties"]
     # Status sent by exact existing label name (no `options` create payload).
-    assert props["Status"] == {"status": {"name": "Working on"}}
+    assert props["Status"] == {"select": {"name": "Working on"}}
     assert "options" not in json.dumps(props)
     assert props["PR"] == {"url": "https://github.com/o/r/pull/9"}
     assert props["Cost"] == {"number": 2.5}
@@ -264,7 +264,7 @@ def test_update_task_only_sends_provided_fields() -> None:
     client = _client(httpx.MockTransport(handler))
     client.update_task("task-page-id", status=STATUS_REVIEW)
 
-    assert captured["body"]["properties"] == {"Status": {"status": {"name": "Review"}}}
+    assert captured["body"]["properties"] == {"Status": {"select": {"name": "Review"}}}
 
 
 def test_update_task_rejects_unknown_status() -> None:
