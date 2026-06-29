@@ -120,6 +120,32 @@ def test_route_after_coding_escalates_on_rate_limit() -> None:
     assert route_after_coding(normal) == "verifier"
 
 
+def test_unbuildable_task_escalates_not_crashes(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from stromboli.graph import _escalate_unbuildable
+    from stromboli.integrations.telegram import TelegramNotifier
+    from stromboli.observability.runs import RunsRegistry
+    from tests.nodes._fakes import FakeNotion
+
+    pushes: list[str] = []
+    notion = FakeNotion()
+    deps = GraphDeps(
+        notion=notion,
+        notifier=TelegramNotifier(send=pushes.append),
+        workspace_root=Path(str(tmp_path)),
+    )
+    final = _escalate_unbuildable(deps, "pg-x", "do x", "Task has no Project relation")
+    # Graceful: Review status + Notion note + Telegram, no exception.
+    assert final.status == "escalated"
+    assert ("pg-x", "Review") in notion.status_writes
+    assert any("could not start" in md for _p, md in notion.appended)
+    assert any("Escalation" in p for p in pushes)
+    # And it's recorded in the dashboard registry as failed.
+    run = RunsRegistry(Path(str(tmp_path)) / ".stromboli" / "runs.db").get_run("pg-x")
+    assert run is not None and run["status"] == "failed"
+
+
 def test_build_graph_is_compilable() -> None:
     graph = build_graph(_offline_deps(), checkpointer=MemorySaver())
     # The compiled graph exposes the canonical node set.

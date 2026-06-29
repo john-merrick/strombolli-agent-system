@@ -71,7 +71,7 @@ from stromboli.nodes.router import (
 from stromboli.observability.runs import RunsRegistry
 from stromboli.observability.runtrace import FileRunTrace, RunTrace
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
-from stromboli.sandbox.runner import TestSandbox, Worktree
+from stromboli.sandbox.runner import GitError, TestSandbox, Worktree
 from stromboli.settings import Settings, load_settings
 from stromboli.state import Source, StromboliState
 
@@ -310,11 +310,41 @@ def run_task(
     # A Notion-sourced task gets a clone-per-task worktree (PRD §11.4) so the
     # coding + PR nodes operate on an isolated checkout, cleaned up on exit.
     if source == "notion" and deps.notion is not None:
-        with _provision_worktree(resolved_settings, deps.notion, resolved_id) as wt:
-            deps.worktree_for = lambda _s: wt
-            return _execute(deps, resolved_id, raw_request, source, checkpointer)
+        try:
+            with _provision_worktree(resolved_settings, deps.notion, resolved_id) as wt:
+                deps.worktree_for = lambda _s: wt
+                return _execute(deps, resolved_id, raw_request, source, checkpointer)
+        except (ValueError, GitError) as exc:
+            # Can't resolve/clone the repo (e.g. no Project relation set) — this
+            # isn't a crash, it's a task that needs a human: escalate gracefully.
+            return _escalate_unbuildable(deps, resolved_id, raw_request, str(exc))
 
     return _execute(deps, resolved_id, raw_request, source, checkpointer)
+
+
+def _escalate_unbuildable(
+    deps: GraphDeps, run_id: str, raw_request: str, reason: str
+) -> StromboliState:
+    """A task that can't even be set up (no repo) → Review + Telegram, not a crash."""
+    logger.warning("Task %s is unbuildable: %s", run_id, reason)
+    note = f"can't build — {reason}"
+    if deps.notion is not None:
+        resilient_append(deps.notion, run_id, f"🚨 **Stromboli could not start:** {note}")
+        try:
+            deps.notion.update_task(run_id, status="Review")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Notion status write failed for %s: %s", run_id, exc)
+    deps.notifier.escalation(run_id, note)
+    if deps.workspace_root is not None:
+        reg = RunsRegistry(Path(deps.workspace_root) / ".stromboli" / "runs.db")
+        reg.register_run(
+            run_id, task_id=run_id, task_name=raw_request[:80] or run_id,
+            source="notion", pid=os.getpid(),
+        )
+        reg.finish_run(run_id, status="failed", error=note)
+    return StromboliState(
+        task_id=run_id, source="notion", raw_request=raw_request, status="escalated"
+    )
 
 
 def _execute(
