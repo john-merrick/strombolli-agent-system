@@ -4173,7 +4173,6 @@ source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
     { name = "claude-agent-sdk" },
-    { name = "fastapi" },
     { name = "httpx" },
     { name = "langfuse" },
     { name = "langgraph" },
@@ -4181,7 +4180,6 @@ dependencies = [
     { name = "litellm" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -4205,7 +4203,6 @@ dev = [
 requires-dist = [
     { name = "chromadb", specifier = ">=0.5" },
     { name = "claude-agent-sdk", specifier = ">=0.1" },
-    { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "langfuse", specifier = ">=2" },
     { name = "langgraph", specifier = ">=0.2" },
@@ -4218,7 +4215,6 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["dev", "orchestration"]
 

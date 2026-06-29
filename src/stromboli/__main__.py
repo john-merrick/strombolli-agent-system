@@ -12,7 +12,6 @@ import argparse
 import logging
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -60,10 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--once", action="store_true", help="Drain the ready queue once and exit."
     )
 
-    dash = sub.add_parser("dashboard", help="Serve the live watchtower dashboard.")
-    dash.add_argument("--host", default="127.0.0.1")
-    dash.add_argument("--port", type=int, default=8765)
-
     watch = sub.add_parser(
         "watch",
         help="Run autonomously: poll Notion for Ready tasks and build them, "
@@ -99,9 +94,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "poll":
         return _poll()
-
-    if args.command == "dashboard":
-        return _dashboard(args.host, args.port)
 
     if args.command == "watch":
         return _watch(args.interval)
@@ -174,29 +166,6 @@ def _watch(interval: float) -> int:
         except Exception:  # noqa: BLE001 - a poll error must not kill the loop
             log.exception("Poll failed; retrying next interval.")
         time.sleep(interval)
-
-
-def _dashboard(host: str, port: int) -> int:
-    """Serve the watchtower over the workspace's runs registry.
-
-    Read-only observability — it needs **only** ``WORKSPACE_ROOT`` (the registry
-    location), not any secrets, so it runs without 1Password / ``op``.
-    """
-    import uvicorn
-
-    from stromboli.dashboard.app import create_dashboard
-    from stromboli.observability.runs import RunsRegistry
-
-    raw = os.environ.get("WORKSPACE_ROOT")
-    if not raw:
-        print("error: set WORKSPACE_ROOT (the dashboard reads its runs registry "
-              "from <WORKSPACE_ROOT>/.stromboli/runs.db)", file=sys.stderr)
-        return 2
-    workspace = Path(raw).expanduser()
-    registry = RunsRegistry(workspace / ".stromboli" / "runs.db")
-    print(f"Stromboli watchtower → http://{host}:{port}  (workspace: {workspace})")
-    uvicorn.run(create_dashboard(registry), host=host, port=port)
-    return 0
 
 
 def _poll() -> int:

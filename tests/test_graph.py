@@ -36,26 +36,6 @@ def test_run_task_generates_task_id() -> None:
     assert final.source == "cli"
 
 
-def test_run_task_populates_runs_registry(tmp_path: object) -> None:
-    from pathlib import Path
-
-    from stromboli.observability.runs import RunsRegistry
-
-    ws = Path(str(tmp_path))
-    final = run_task(
-        "stub", task_id="reg-run", deps=GraphDeps(workspace_root=ws),
-        checkpointer=MemorySaver(),
-    )
-    assert final.status == "done"
-    reg = RunsRegistry(ws / ".stromboli" / "runs.db")
-    run = reg.get_run("reg-run")
-    assert run is not None
-    assert run["status"] == "done"
-    # Each node recorded a start/end event (the dashboard's phase timeline).
-    nodes = {e["node"] for e in run["node_events"]}
-    assert {"intake", "spec", "prompt", "coding", "verifier"} <= nodes
-
-
 def test_router_ambiguous_goes_to_human() -> None:
     state = StromboliState(
         task_id="t", source="cli", raw_request="vague",
@@ -125,7 +105,6 @@ def test_unbuildable_task_escalates_not_crashes(tmp_path: object) -> None:
 
     from stromboli.graph import _escalate_unbuildable
     from stromboli.integrations.telegram import TelegramNotifier
-    from stromboli.observability.runs import RunsRegistry
     from tests.nodes._fakes import FakeNotion
 
     pushes: list[str] = []
@@ -141,9 +120,6 @@ def test_unbuildable_task_escalates_not_crashes(tmp_path: object) -> None:
     assert ("pg-x", "Review") in notion.status_writes
     assert any("could not start" in md for _p, md in notion.appended)
     assert any("Escalation" in p for p in pushes)
-    # And it's recorded in the dashboard registry as failed.
-    run = RunsRegistry(Path(str(tmp_path)) / ".stromboli" / "runs.db").get_run("pg-x")
-    assert run is not None and run["status"] == "failed"
 
 
 def test_build_graph_is_compilable() -> None:

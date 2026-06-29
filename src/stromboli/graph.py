@@ -17,7 +17,6 @@ trace before invoking the graph and closes it after.
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -42,7 +41,7 @@ from stromboli.integrations.notion import (
     resilient_append,
 )
 from stromboli.integrations.telegram import Notifier, NullNotifier
-from stromboli.llm.coder import AgentCoder, Coder, TurnRecord
+from stromboli.llm.coder import Coder, TurnRecord
 from stromboli.llm.gateway import Gateway
 from stromboli.memory import Memory
 from stromboli.nodes import (
@@ -68,7 +67,6 @@ from stromboli.nodes.router import (
     VERIFIER,
     route_after_spec,
 )
-from stromboli.observability.runs import RunsRegistry
 from stromboli.observability.runtrace import FileRunTrace, RunTrace
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import GitError, TestSandbox, Worktree
@@ -122,55 +120,27 @@ class GraphDeps:
     dry_run_pr: bool = True
 
 
-class RunCancelled(RuntimeError):
-    """A cancel was requested via the registry; the run stops cooperatively."""
-
-
-def _node_detail(out: dict[str, object]) -> str:
-    """A compact one-line node summary for the registry/dashboard."""
-    bits: list[str] = []
-    status = out.get("status")
-    if status:
-        bits.append(f"status={status}")
-    verdict = out.get("verdict")
-    decision = getattr(verdict, "decision", None)
-    if decision:
-        bits.append(f"verdict={decision}")
-    diff = out.get("code_diff")
-    if isinstance(diff, str):
-        bits.append(f"diff_chars={len(diff)}")
-    return " ".join(bits)
-
-
 def _wrap(
     name: str,
     node: Node,
     *,
     tracer: BuildTracer | None,
     run_trace: RunTrace,
-    registry: RunsRegistry | None,
 ) -> Any:
-    """Wrap a node with: cooperative cancel check, registry start/end, Langfuse
-    span (unless ``tracer is None`` for self-tracing nodes), and run-trace record.
+    """Wrap a node with a Langfuse span (unless ``tracer is None`` for
+    self-tracing nodes) + a local run-trace record.
 
     Returns ``Any`` because LangGraph's overloaded ``add_node`` can't infer its
     node-input type var from an alias-typed ``Callable`` (only a literal func).
     """
 
     def wrapped(state: StromboliState) -> dict[str, object]:
-        rid = state.task_id
-        if registry is not None and registry.is_cancel_requested(rid):
-            raise RunCancelled(f"cancelled before {name}")
-        if registry is not None:
-            registry.start_node(rid, name)
         if tracer is not None:
-            with traced_node(tracer, name, metadata={"task_id": rid}):
+            with traced_node(tracer, name, metadata={"task_id": state.task_id}):
                 out = node(state)
         else:  # self-tracing node (coding nests its own SDK-turn spans)
             out = node(state)
         run_trace.record(name, out)
-        if registry is not None:
-            registry.end_node(rid, name, detail=_node_detail(out))
         return out
 
     return wrapped
@@ -181,7 +151,6 @@ def build_graph(
     *,
     checkpointer: Any | None = None,
     run_trace: RunTrace | None = None,
-    registry: RunsRegistry | None = None,
 ) -> Any:
     """Assemble and compile the StateGraph from ``deps``.
 
@@ -198,9 +167,7 @@ def build_graph(
     builder = StateGraph(StromboliState)
 
     def traced(name: str, node: Node) -> Any:
-        return _wrap(
-            name, node, tracer=deps.tracer, run_trace=trace, registry=registry
-        )
+        return _wrap(name, node, tracer=deps.tracer, run_trace=trace)
 
     builder.add_node("intake", traced("intake", make_intake(notion=deps.notion)))
     retriever = deps.memory.recall_for_spec if deps.memory is not None else None
@@ -232,7 +199,6 @@ def build_graph(
             ),
             tracer=None,  # coding self-traces its SDK turns (§8)
             run_trace=trace,
-            registry=registry,
         ),
     )
     builder.add_node(
@@ -335,13 +301,6 @@ def _escalate_unbuildable(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Notion status write failed for %s: %s", run_id, exc)
     deps.notifier.escalation(run_id, note)
-    if deps.workspace_root is not None:
-        reg = RunsRegistry(Path(deps.workspace_root) / ".stromboli" / "runs.db")
-        reg.register_run(
-            run_id, task_id=run_id, task_name=raw_request[:80] or run_id,
-            source="notion", pid=os.getpid(),
-        )
-        reg.finish_run(run_id, status="failed", error=note)
     return StromboliState(
         task_id=run_id, source="notion", raw_request=raw_request, status="escalated"
     )
@@ -360,17 +319,6 @@ def _execute(
         if deps.workspace_root is not None
         else RunTrace()
     )
-    registry = (
-        RunsRegistry(Path(deps.workspace_root) / ".stromboli" / "runs.db")
-        if deps.workspace_root is not None
-        else None
-    )
-    if registry is not None:
-        registry.register_run(
-            task_id, task_id=task_id, task_name=raw_request[:80] or task_id,
-            source=source, pid=os.getpid(),
-        )
-        _wire_turn_recording(deps, registry, task_id)
     if isinstance(run_trace, FileRunTrace):
         logger.info("Run trace: %s", run_trace.directory)
 
@@ -378,7 +326,6 @@ def _execute(
         deps,
         checkpointer=checkpointer or MemorySaver(),
         run_trace=run_trace,
-        registry=registry,
     )
     initial = StromboliState(task_id=task_id, source=source, raw_request=raw_request)
     deps.tracer.start(task_id=task_id, name=raw_request[:60] or "task")
@@ -387,21 +334,8 @@ def _execute(
         result = graph.invoke(
             initial, config={"configurable": {"thread_id": task_id}}
         )
-    except RunCancelled as exc:
-        logger.warning("Run %s cancelled: %s", task_id, exc)
-        if registry is not None:
-            registry.finish_run(task_id, status="cancelled")
-        deps.tracer.tag("cancelled")
-        deps.tracer.finish(error="cancelled")
-        deps.notifier.escalation(task_id, "run cancelled from the dashboard")
-        return StromboliState(
-            task_id=task_id, source=source, raw_request=raw_request,
-            status="escalated",
-        )
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        if registry is not None:
-            registry.finish_run(task_id, status="failed", error=error)
         deps.tracer.tag("failure")
         deps.tracer.finish(error=error)
         raise
@@ -411,8 +345,6 @@ def _execute(
     if isinstance(result, dict) and "__interrupt__" in result:
         deps.tracer.tag("escalated")
         deps.tracer.finish()
-        if registry is not None:
-            registry.finish_run(task_id, status="escalated")
         return StromboliState.model_validate(
             {k: v for k, v in result.items() if k != "__interrupt__"}
         )
@@ -420,30 +352,8 @@ def _execute(
     deps.tracer.tag(_terminal_tag(result))
     deps.tracer.finish()
     final = StromboliState.model_validate(result)
-    if registry is not None:
-        registry.finish_run(task_id, status=final.status, pr_url=final.pr_url)
     _finalize(final, deps)
     return final
-
-
-def _wire_turn_recording(
-    deps: GraphDeps, registry: RunsRegistry, run_id: str
-) -> None:
-    """Tee the coder's per-turn hook into the registry (one run per process)."""
-    coder = deps.coder
-    if not isinstance(coder, AgentCoder):
-        return
-    base = coder.on_turn
-
-    def tee(record: TurnRecord) -> None:
-        if base is not None:
-            base(record)
-        registry.record_turn(
-            run_id, record.index, list(record.tools),
-            (record.usage or {}).get("output_tokens"),
-        )
-
-    coder.on_turn = tee
 
 
 def _finalize(state: StromboliState, deps: GraphDeps) -> None:

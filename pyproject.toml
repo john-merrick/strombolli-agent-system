@@ -14,8 +14,6 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
-    "fastapi>=0.110",
-    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -43,10 +41,6 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
-
-[tool.ruff.lint.per-file-ignores]
-# The dashboard embeds an HTML/JS template — long lines are inherent there.
-"src/stromboli/dashboard/app.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
