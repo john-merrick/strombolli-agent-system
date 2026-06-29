@@ -45,6 +45,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["cli", "notion", "telegram"],
         help="The intake source (default: cli).",
     )
+
+    poll = sub.add_parser(
+        "poll", help="Run every Ready Notion task through the graph (the front-end)."
+    )
+    poll.add_argument(
+        "--once", action="store_true", help="Drain the ready queue once and exit."
+    )
     return parser
 
 
@@ -64,7 +71,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PR: {final.pr_url}")
         return 0
 
+    if args.command == "poll":
+        return _poll()
+
     return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+def _poll() -> int:
+    """Drain the Ready Notion tasks through the graph (Notion is the front-end)."""
+    from stromboli.graph import run_task
+    from stromboli.integrations.notion import NotionTaskClient
+    from stromboli.settings import load_settings
+
+    settings = load_settings()
+    notion = NotionTaskClient(settings.notion_token)
+    tasks = notion.query_ready_tasks(settings.notion_task_db_id)
+    if not tasks:
+        print("No Ready tasks.")
+        return 0
+    for task in tasks:
+        final = run_task("", source="notion", task_id=task.page_id, settings=settings)
+        print(f"task {final.task_id} ({task.name}): {final.status}")
+    return 0
 
 
 if __name__ == "__main__":

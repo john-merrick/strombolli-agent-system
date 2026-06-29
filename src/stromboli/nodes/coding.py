@@ -17,16 +17,16 @@ With no coder/sandbox/worktree wired it falls back to a stub (Phase 0 / tests).
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from pathlib import Path
 
 from stromboli.llm.coder import Coder, CoderError
 from stromboli.nodes.intake import Node
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
-from stromboli.sandbox.runner import DEFAULT_TEST_COMMAND, TestSandbox
+from stromboli.sandbox.runner import DEFAULT_TEST_COMMAND, TestSandbox, Worktree
 from stromboli.state import StromboliState, TestResult
 
-#: Resolves the prepared worktree path for a task (clone-per-task, PRD §11.4).
-WorktreeFor = Callable[[StromboliState], Path]
+#: Resolves the prepared worktree for a task (clone-per-task, PRD §11.4). The
+#: same worktree is returned across the coding/PR nodes of one task run.
+WorktreeFor = Callable[[StromboliState], Worktree]
 
 
 def _build_prompt(state: StromboliState) -> str:
@@ -94,7 +94,7 @@ def make_coding(
             "coding",
             metadata={"task_id": state.task_id, "resume": bool(state.session_id)},
         ) as span:
-            run = coder.run(prompt, worktree, resume=state.session_id)
+            run = coder.run(prompt, worktree.path, resume=state.session_id)
             # Nest each SDK turn as a child span (PRD §8).
             for turn in run.turn_records:
                 span.child(
@@ -107,7 +107,7 @@ def make_coding(
                     f"coder run not clean: subtype={run.subtype!r} "
                     f"is_error={run.is_error}"
                 )
-            sandbox_result = sandbox.run_tests(worktree, test_command)
+            sandbox_result = sandbox.run_tests(worktree.path, test_command)
 
         summary = (
             "tests passed"

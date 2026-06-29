@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -30,7 +32,12 @@ from stromboli.config import (
     Budgets,
     from_settings,
 )
-from stromboli.integrations.notion import AppendGateway
+from stromboli.integrations.github import GitHubGateway, GitRunner
+from stromboli.integrations.notion import (
+    AppendGateway,
+    build_feedback_summary,
+    resilient_append,
+)
 from stromboli.integrations.telegram import Notifier, NullNotifier
 from stromboli.llm.coder import Coder
 from stromboli.llm.gateway import Gateway
@@ -50,7 +57,7 @@ from stromboli.nodes.coding import WorktreeFor
 from stromboli.nodes.intake import NotionReader
 from stromboli.nodes.router import CODING, HUMAN, PR, route_after_spec
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
-from stromboli.sandbox.runner import TestSandbox
+from stromboli.sandbox.runner import TestSandbox, Worktree
 from stromboli.settings import Settings, load_settings
 from stromboli.state import Source, StromboliState
 
@@ -58,7 +65,9 @@ logger = logging.getLogger(__name__)
 
 
 class NotionGateway(NotionReader, AppendGateway, Protocol):
-    """The combined Notion surface the graph needs (read a task + append back)."""
+    """The combined Notion surface the graph needs (read, append, set status)."""
+
+    def update_task(self, page_id: str, *, status: str | None = ...) -> None: ...
 
 
 @dataclass
@@ -85,6 +94,11 @@ class GraphDeps:
     worktree_for: WorktreeFor | None = None
     #: The three-tier memory (Phase 4): seeds Spec, learns on completion.
     memory: Memory | None = None
+    #: GitHub gateway for the live PR node (Phase 6).
+    github: GitHubGateway | None = None
+    #: Git runner seam for the PR node (``None`` → real git); injected in tests.
+    git_run: GitRunner | None = None
+    base_branch: str = "main"
     #: PR node opens no real PR while true (Phase 0/1 default; live in Phase 6).
     dry_run_pr: bool = True
 
@@ -155,7 +169,19 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
         ),
     )
     builder.add_node(
-        "pr", _traced(deps.tracer, "pr", make_pr(dry_run=deps.dry_run_pr))
+        "pr",
+        _traced(
+            deps.tracer,
+            "pr",
+            make_pr(
+                github=deps.github,
+                notion=deps.notion,
+                worktree_for=deps.worktree_for,
+                base=deps.base_branch,
+                dry_run=deps.dry_run_pr,
+                git_run=deps.git_run,
+            ),
+        ),
     )
     builder.add_node(
         "human",
@@ -205,20 +231,40 @@ def run_task(
     """
     resolved_id = task_id or uuid.uuid4().hex
 
-    if deps is None:
-        deps = _deps_from_settings(settings or load_settings())
+    # Caller-supplied deps → fully offline (tests / Phase 0 stub).
+    if deps is not None:
+        return _execute(deps, resolved_id, raw_request, source, checkpointer)
 
+    resolved_settings = settings or load_settings()
+    deps = _deps_from_settings(resolved_settings)
+
+    # A Notion-sourced task gets a clone-per-task worktree (PRD §11.4) so the
+    # coding + PR nodes operate on an isolated checkout, cleaned up on exit.
+    if source == "notion" and deps.notion is not None:
+        with _provision_worktree(resolved_settings, deps.notion, resolved_id) as wt:
+            deps.worktree_for = lambda _s: wt
+            return _execute(deps, resolved_id, raw_request, source, checkpointer)
+
+    return _execute(deps, resolved_id, raw_request, source, checkpointer)
+
+
+def _execute(
+    deps: GraphDeps,
+    task_id: str,
+    raw_request: str,
+    source: Source,
+    checkpointer: Any | None,
+) -> StromboliState:
+    """Compile + invoke the graph for one task, trace it, and finalize."""
     graph = build_graph(deps, checkpointer=checkpointer or MemorySaver())
-    initial = StromboliState(
-        task_id=resolved_id, source=source, raw_request=raw_request
-    )
+    initial = StromboliState(task_id=task_id, source=source, raw_request=raw_request)
 
-    deps.tracer.start(task_id=resolved_id, name=raw_request[:60] or "task")
+    deps.tracer.start(task_id=task_id, name=raw_request[:60] or "task")
     error: str | None = None
     result: Any = None
     try:
         result = graph.invoke(
-            initial, config={"configurable": {"thread_id": resolved_id}}
+            initial, config={"configurable": {"thread_id": task_id}}
         )
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
@@ -227,15 +273,61 @@ def run_task(
         deps.tracer.tag(_terminal_tag(result if error is None else None))
         deps.tracer.finish(error=error)
 
-    return StromboliState.model_validate(result)
+    # A paused (interrupted) run isn't terminal — the escalation was already
+    # surfaced by the human node; don't finalize it as done.
+    if isinstance(result, dict) and "__interrupt__" in result:
+        return StromboliState.model_validate(
+            {k: v for k, v in result.items() if k != "__interrupt__"}
+        )
+
+    final = StromboliState.model_validate(result)
+    _finalize(final, deps)
+    return final
+
+
+def _finalize(state: StromboliState, deps: GraphDeps) -> None:
+    """Terminal I/O for a completed task: Notion write-back + Telegram (PRD §6.7)."""
+    if state.status != "done":
+        return
+    if deps.notion is not None:
+        summary = build_feedback_summary(
+            status="done",
+            pr_url=state.pr_url,
+            reflections=state.reflections,
+            coverage_note=state.verdict.coverage_note if state.verdict else "",
+        )
+        resilient_append(deps.notion, state.task_id, summary)
+        try:
+            # No auto-merge — a human reviews the PR (PRD success criteria).
+            deps.notion.update_task(state.task_id, status="Review")
+        except Exception as exc:  # noqa: BLE001 - write-back must never crash a run
+            logger.warning("Notion status write failed for %s: %s", state.task_id, exc)
+    deps.notifier.done(state.task_id, state.pr_url)
+
+
+@contextmanager
+def _provision_worktree(
+    settings: Settings, notion: NotionGateway, task_id: str
+) -> Iterator[Worktree]:
+    """Clone-per-task worktree for a Notion task, cleaned up on exit (PRD §11.4)."""
+    from stromboli.sandbox.runner import WorktreeManager
+
+    task = notion.get_task(task_id)
+    repo = notion.get_project_repo(task)  # type: ignore[attr-defined]
+    manager = WorktreeManager(settings.workspace_root, token=settings.github_token)
+    with manager.worktree(repo, task.page_id, task.name) as worktree:
+        yield worktree
 
 
 def _deps_from_settings(settings: Settings) -> GraphDeps:
     """Assemble the production dependency graph from env-backed settings."""
+    from stromboli.integrations.github import GitHubClient
     from stromboli.integrations.notion import NotionTaskClient
     from stromboli.integrations.telegram import make_notifier
+    from stromboli.llm.coder import AgentCoder
     from stromboli.llm.gateway import build_gateway
     from stromboli.observability.tracing import build_tracer
+    from stromboli.sandbox.runner import SandboxRunner
 
     config = from_settings(settings)
     tracer = build_tracer(
@@ -249,6 +341,11 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     notion = NotionTaskClient(settings.notion_token)
     notifier = make_notifier(settings.telegram_bot_token, settings.telegram_chat_id)
     memory = Memory.open(settings.chroma_persist_dir)
+    coder = AgentCoder(
+        model=config.models.coder,
+        api_key=settings.anthropic_api_key,
+        max_turns=config.budgets.max_inner_turns,
+    )
     return GraphDeps(
         budgets=config.budgets,
         tracer=tracer,
@@ -258,6 +355,11 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         notion=notion,
         notifier=notifier,
         memory=memory,
+        coder=coder,
+        sandbox=SandboxRunner(),
+        github=GitHubClient(settings.github_token),
+        base_branch="main",
+        dry_run_pr=False,
     )
 
 

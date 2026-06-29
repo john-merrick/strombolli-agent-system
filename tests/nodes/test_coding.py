@@ -11,6 +11,7 @@ from stromboli.llm.coder import CoderError, CoderRun, TurnRecord
 from stromboli.nodes.coding import _build_prompt, make_coding
 from stromboli.sandbox.runner import SandboxResult
 from stromboli.state import Spec, StromboliState, Verdict
+from tests.nodes._fakes import make_worktree
 
 
 class FakeCoder:
@@ -67,7 +68,7 @@ def test_stub_when_unwired() -> None:
 def test_known_good_spec_produces_passing_diff() -> None:
     coder = FakeCoder(_run("success"))
     sandbox = FakeSandbox(SandboxResult(passed=True, output="1 passed", exit_code=0))
-    node = make_coding(coder, sandbox, lambda _s: Path("/tmp/wt"))
+    node = make_coding(coder, sandbox, lambda _s: make_worktree())
     out = node(_state())
     assert out["code_diff"] == "diff --git a/x b/x\n+ok"
     assert out["inner_iterations"] == 3
@@ -80,7 +81,7 @@ def test_impossible_spec_budget_exit_captures_failure() -> None:
     # error_max_turns is a clean budget exit; the sandbox reports the failure.
     coder = FakeCoder(_run("error_max_turns"))
     sandbox = FakeSandbox(SandboxResult(passed=False, output="1 failed", exit_code=1))
-    node = make_coding(coder, sandbox, lambda _s: Path("/tmp/wt"))
+    node = make_coding(coder, sandbox, lambda _s: make_worktree())
     out = node(_state())
     results = out["test_results"]
     assert isinstance(results, list) and results[0].passed is False
@@ -90,7 +91,7 @@ def test_impossible_spec_budget_exit_captures_failure() -> None:
 def test_non_clean_subtype_raises_node_failure() -> None:
     coder = FakeCoder(_run("error_during_execution", is_error=True))
     sandbox = FakeSandbox(SandboxResult(passed=True, output="", exit_code=0))
-    node = make_coding(coder, sandbox, lambda _s: Path("/tmp/wt"))
+    node = make_coding(coder, sandbox, lambda _s: make_worktree())
     with pytest.raises(CoderError):
         node(_state())
 
@@ -98,7 +99,7 @@ def test_non_clean_subtype_raises_node_failure() -> None:
 def test_revise_pass_resumes_session_and_injects_reason() -> None:
     coder = FakeCoder(_run("success"))
     sandbox = FakeSandbox(SandboxResult(passed=True, output="ok", exit_code=0))
-    node = make_coding(coder, sandbox, lambda _s: Path("/tmp/wt"))
+    node = make_coding(coder, sandbox, lambda _s: make_worktree())
     state = _state(
         session_id="sess-prev",
         verdict=Verdict(decision="revise", reason="missed acceptance criterion 2"),

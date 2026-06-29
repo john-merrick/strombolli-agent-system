@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TypeVar
 
 from pydantic import BaseModel
 
-from stromboli.integrations.notion import Task
+from stromboli.integrations.notion import Repo, Task
+from stromboli.sandbox.runner import Worktree
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def make_worktree(path: str = "/tmp/wt") -> Worktree:
+    """A fake prepared worktree for coding/PR node tests."""
+    return Worktree(
+        path=Path(path), branch="stromboli/t-x", repo=Repo("o", "r"),
+        clone_path=Path("/tmp/clone"),
+    )
 
 
 class FakeGateway:
@@ -58,9 +68,28 @@ class FakeNotion:
     def __init__(self, task: Task | None = None) -> None:
         self._task = task or make_task()
         self.appended: list[tuple[str, str]] = []
+        self.status_writes: list[tuple[str, str | None]] = []
+        self.pr_writes: list[tuple[str, str | None]] = []
 
     def get_task(self, page_id: str) -> Task:
         return self._task
 
+    def get_project_repo(self, task: Task) -> Repo:
+        return Repo("o", "r")
+
     def append_task_body(self, page_id: str, markdown: str) -> None:
         self.appended.append((page_id, markdown))
+
+    def update_task(
+        self,
+        page_id: str,
+        *,
+        status: str | None = None,
+        pr_url: str | None = None,
+        cost: float | None = None,
+        tokens: int | None = None,
+    ) -> None:
+        if status is not None:
+            self.status_writes.append((page_id, status))
+        if pr_url is not None:
+            self.pr_writes.append((page_id, pr_url))

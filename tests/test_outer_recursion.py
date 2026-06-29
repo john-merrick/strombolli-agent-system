@@ -11,7 +11,7 @@ from stromboli.graph import GraphDeps, build_graph
 from stromboli.llm.coder import CoderRun, TurnRecord
 from stromboli.sandbox.runner import SandboxResult
 from stromboli.state import StromboliState
-from tests.nodes._fakes import RoutingGateway
+from tests.nodes._fakes import RoutingGateway, make_worktree
 
 
 class _Coder:
@@ -53,7 +53,7 @@ def _always_revise_deps(coder: _Coder, cap: int) -> GraphDeps:
         verifier_model="gemini/gemini-2.5-pro",
         coder=coder,
         sandbox=_Sandbox(),
-        worktree_for=lambda _s: Path("/tmp/wt"),
+        worktree_for=lambda _s: make_worktree(),
     )
 
 
@@ -92,7 +92,7 @@ def test_pass_on_first_try_reaches_pr_then_done() -> None:
     )
     deps = GraphDeps(
         gateway=gateway, reasoning_model="haiku", verifier_model="gemini/x",
-        coder=coder, sandbox=_Sandbox(), worktree_for=lambda _s: Path("/tmp/wt"),
+        coder=coder, sandbox=_Sandbox(), worktree_for=lambda _s: make_worktree(),
     )
     graph = build_graph(deps, checkpointer=MemorySaver())
     final = graph.invoke(
