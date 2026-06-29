@@ -12,6 +12,7 @@ import argparse
 import logging
 import os
 import sys
+from pathlib import Path
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -96,16 +97,24 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dashboard(host: str, port: int) -> int:
-    """Serve the watchtower dashboard over the workspace's runs registry."""
+    """Serve the watchtower over the workspace's runs registry.
+
+    Read-only observability — it needs **only** ``WORKSPACE_ROOT`` (the registry
+    location), not any secrets, so it runs without 1Password / ``op``.
+    """
     import uvicorn
 
     from stromboli.dashboard.app import create_dashboard
     from stromboli.observability.runs import RunsRegistry
-    from stromboli.settings import load_settings
 
-    settings = load_settings()
-    registry = RunsRegistry(settings.workspace_root / ".stromboli" / "runs.db")
-    print(f"Stromboli watchtower → http://{host}:{port}")
+    raw = os.environ.get("WORKSPACE_ROOT")
+    if not raw:
+        print("error: set WORKSPACE_ROOT (the dashboard reads its runs registry "
+              "from <WORKSPACE_ROOT>/.stromboli/runs.db)", file=sys.stderr)
+        return 2
+    workspace = Path(raw).expanduser()
+    registry = RunsRegistry(workspace / ".stromboli" / "runs.db")
+    print(f"Stromboli watchtower → http://{host}:{port}  (workspace: {workspace})")
     uvicorn.run(create_dashboard(registry), host=host, port=port)
     return 0
 
