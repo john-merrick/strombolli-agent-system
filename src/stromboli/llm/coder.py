@@ -23,6 +23,7 @@ the control flow is unit-tested without launching a real agent or git.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     PermissionResultAllow,
     PermissionResultDeny,
+    RateLimitEvent,
     ResultMessage,
     TextBlock,
     ToolPermissionContext,
@@ -42,6 +44,8 @@ from claude_agent_sdk import (
 from claude_agent_sdk import (
     query as sdk_query,
 )
+
+from stromboli.config import DEFAULT_AUTH_MODE, AuthMode
 
 #: The exact tools the coding job needs; everything else fails closed (§6.4).
 DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = ("Read", "Edit", "Write", "Bash", "Glob", "Grep")
@@ -58,6 +62,22 @@ DiffFn = Callable[[Path], str]
 
 class CoderError(RuntimeError):
     """The SDK run ended in a non-clean state (an execution error, not budget)."""
+
+
+class RateLimitError(RuntimeError):
+    """The subscription rate-limit window was hit mid-run (PRD §4a).
+
+    Not a failure — a *retryable escalation*: the caller pauses and resumes the
+    captured ``session_id`` after ``resets_at``, rather than crashing the task.
+    """
+
+    def __init__(
+        self, *, session_id: str | None, resets_at: str | None = None
+    ) -> None:
+        self.session_id = session_id
+        self.resets_at = resets_at
+        when = f" (resets at {resets_at})" if resets_at else ""
+        super().__init__(f"Coder hit the rate-limit window{when}.")
 
 
 class Coder(Protocol):
@@ -107,10 +127,17 @@ def _git_diff(root: Path) -> str:
 
 @dataclass
 class AgentCoder:
-    """A bounded, tool-constrained wrapper over the Claude Agent SDK loop."""
+    """A bounded, tool-constrained wrapper over the Claude Agent SDK loop.
+
+    Auth (PRD §4a): ``subscription`` runs on the logged-in ``claude`` plan and
+    passes **no** API key to the SDK (and asserts the process env has none, so a
+    stray key can't silently flip billing to pay-as-you-go); ``api_key`` passes
+    the Platform key through.
+    """
 
     model: str
-    api_key: str
+    api_key: str | None = None
+    auth_mode: AuthMode = DEFAULT_AUTH_MODE
     allowed_tools: tuple[str, ...] = DEFAULT_ALLOWED_TOOLS
     max_turns: int = 25
     max_budget_usd: float | None = None
@@ -122,6 +149,15 @@ class AgentCoder:
             self.query_fn = sdk_query
         if self.diff_fn is None:
             self.diff_fn = _git_diff
+        if self.auth_mode == "subscription" and os.environ.get("ANTHROPIC_API_KEY"):
+            # Defense-in-depth: a stray key in the process env would be inherited
+            # by the SDK subprocess and flip billing to pay-as-you-go (PRD §4a).
+            raise CoderError(
+                "auth_mode=subscription but ANTHROPIC_API_KEY is set in the "
+                "environment; unset it so the coder uses plan tokens."
+            )
+        if self.auth_mode == "api_key" and not self.api_key:
+            raise CoderError("auth_mode=api_key requires an api_key.")
 
     async def _gate(
         self,
@@ -138,6 +174,13 @@ class AgentCoder:
         )
 
     def _options(self, cwd: Path, resume: str | None) -> ClaudeAgentOptions:
+        # subscription → no api key in the subprocess env (run on plan tokens);
+        # api_key → pass the Platform key through (PRD §4 / §4a).
+        env = (
+            {"ANTHROPIC_API_KEY": self.api_key}
+            if self.auth_mode == "api_key" and self.api_key
+            else {}
+        )
         return ClaudeAgentOptions(
             model=self.model,
             allowed_tools=list(self.allowed_tools),
@@ -147,8 +190,7 @@ class AgentCoder:
             max_budget_usd=self.max_budget_usd,
             cwd=str(cwd),
             resume=resume,
-            # The coder authenticates with a Platform API key (PRD §4).
-            env={"ANTHROPIC_API_KEY": self.api_key},
+            env=env,
         )
 
     async def _arun(self, prompt: str, cwd: Path, resume: str | None) -> CoderRun:
@@ -157,6 +199,9 @@ class AgentCoder:
         turns: list[TurnRecord] = []
         final_text = ""
         result: ResultMessage | None = None
+        session_id = resume
+        rate_limit_reset: str | None = None
+        rate_limited = False
 
         async for message in self.query_fn(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
@@ -169,8 +214,26 @@ class AgentCoder:
                 turns.append(
                     TurnRecord(index=len(turns) + 1, tools=tools, usage=message.usage)
                 )
+                if message.session_id:
+                    session_id = message.session_id
+                if message.error == "rate_limit":
+                    rate_limited = True
+            elif isinstance(message, RateLimitEvent):
+                if message.session_id:
+                    session_id = message.session_id
+                info = message.rate_limit_info
+                if getattr(info, "status", None) == "rejected":
+                    rate_limited = True
+                    rate_limit_reset = getattr(info, "resets_at", None)
             elif isinstance(message, ResultMessage):
                 result = message
+                if message.session_id:
+                    session_id = message.session_id
+
+        # A rate-limit cutoff is a retryable escalation, not a failure (PRD §4a):
+        # surface the session so the caller can resume after the window resets.
+        if rate_limited:
+            raise RateLimitError(session_id=session_id, resets_at=rate_limit_reset)
 
         if result is None:
             raise CoderError("Agent SDK produced no terminal result message.")
@@ -201,5 +264,6 @@ __all__ = [
     "CoderRun",
     "DiffFn",
     "QueryFn",
+    "RateLimitError",
     "TurnRecord",
 ]

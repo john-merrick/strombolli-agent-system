@@ -16,6 +16,7 @@ from stromboli.nodes.memory import make_memory_write
 from stromboli.nodes.pr import make_pr
 from stromboli.nodes.router import (
     make_route_after_verdict,
+    route_after_coding,
     route_after_spec,
 )
 from stromboli.nodes.spec import make_spec
@@ -31,5 +32,6 @@ __all__ = [
     "make_route_after_verdict",
     "make_spec",
     "make_verifier",
+    "route_after_coding",
     "route_after_spec",
 ]

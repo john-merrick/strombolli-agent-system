@@ -16,6 +16,7 @@ from stromboli.state import StromboliState
 CODING = "coding"
 HUMAN = "human"
 PR = "pr"
+VERIFIER = "verifier"
 
 #: A routing function: state → next node name.
 RouteFn = Callable[[StromboliState], str]
@@ -26,6 +27,17 @@ def route_after_spec(state: StromboliState) -> str:
     if state.spec is not None and state.spec.ambiguous:
         return HUMAN
     return CODING
+
+
+def route_after_coding(state: StromboliState) -> str:
+    """After coding: a rate-limit escalation → Human, otherwise → Verifier.
+
+    The coding node sets ``status="escalated"`` on a rate-limit cutoff (PRD §4a),
+    a retryable escalation; every other outcome proceeds to verification.
+    """
+    if state.status == "escalated":
+        return HUMAN
+    return VERIFIER
 
 
 def make_route_after_verdict(budgets: Budgets) -> RouteFn:
@@ -56,7 +68,9 @@ __all__ = [
     "CODING",
     "HUMAN",
     "PR",
+    "VERIFIER",
     "RouteFn",
     "make_route_after_verdict",
+    "route_after_coding",
     "route_after_spec",
 ]

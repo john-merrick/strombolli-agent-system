@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from stromboli.llm.coder import Coder, CoderError
+from stromboli.llm.coder import Coder, CoderError, RateLimitError
 from stromboli.nodes.intake import Node
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import DEFAULT_TEST_COMMAND, TestSandbox, Worktree
@@ -94,7 +94,22 @@ def make_coding(
             "coding",
             metadata={"task_id": state.task_id, "resume": bool(state.session_id)},
         ) as span:
-            run = coder.run(prompt, worktree.path, resume=state.session_id)
+            try:
+                run = coder.run(prompt, worktree.path, resume=state.session_id)
+            except RateLimitError as exc:
+                # Retryable escalation (PRD §4a): preserve the session so a resume
+                # after the window continues this coding attempt rather than
+                # starting cold. Routed to the human interrupt by route_after_coding.
+                span.update(rate_limited=True, resets_at=exc.resets_at)
+                reset = f" (resets at {exc.resets_at})" if exc.resets_at else ""
+                return {
+                    "status": "escalated",
+                    "session_id": exc.session_id or state.session_id,
+                    "reflections": [
+                        f"rate-limited mid-run{reset}; resume the SDK session "
+                        "after the window resets"
+                    ],
+                }
             # Nest each SDK turn as a child span (PRD §8).
             for turn in run.turn_records:
                 span.child(

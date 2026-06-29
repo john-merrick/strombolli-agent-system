@@ -7,8 +7,10 @@ is mandatory; if any is missing, :func:`load_settings` fails fast with a
 
 The two model surfaces (PRD §4) authenticate differently:
 
-* the **coder** (Claude Agent SDK) uses a **Platform API key**
-  (:attr:`Settings.anthropic_api_key`) for predictable per-token cost; and
+* the **coder** (Claude Agent SDK) authenticates per ``CODER_AUTH_MODE`` (PRD
+  §4a): ``subscription`` (default) runs on the logged-in ``claude`` plan tokens
+  with **no** API key, while ``api_key`` uses a Platform key
+  (:attr:`Settings.anthropic_api_key`) for per-token billing; and
 * the **reasoning + verifier** calls go through the **LiteLLM gateway**
   (:attr:`Settings.litellm_base_url` + :attr:`Settings.litellm_api_key`), which
   maps model names to providers — so the non-Claude verifier needs no separate
@@ -20,21 +22,25 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from stromboli.config import (
+    DEFAULT_AUTH_MODE,
     DEFAULT_CODER_MODEL,
     DEFAULT_REASONING_MODEL,
     DEFAULT_VERIFIER_MODEL,
+    AuthMode,
 )
 
 #: The environment variables Stromboli requires to run, in declaration order.
+#: ``ANTHROPIC_API_KEY`` is intentionally *not* here — it is required only under
+#: ``CODER_AUTH_MODE=api_key`` and must be **absent** under ``subscription``
+#: (enforced in :meth:`Settings.check_coder_auth`, PRD §4a).
 REQUIRED_ENV_VARS: tuple[str, ...] = (
     "NOTION_TOKEN",
     "NOTION_TASK_DB_ID",
     "GITHUB_TOKEN",
-    "ANTHROPIC_API_KEY",
     "LITELLM_BASE_URL",
     "LITELLM_API_KEY",
     "LANGFUSE_PUBLIC_KEY",
@@ -74,8 +80,14 @@ class Settings(BaseSettings):
     # -- GitHub (PR / Commit node) ------------------------------------------ #
     github_token: str = Field(alias="GITHUB_TOKEN")
 
-    # -- Coder surface: Claude Agent SDK, Platform API key (PRD §4) --------- #
-    anthropic_api_key: str = Field(alias="ANTHROPIC_API_KEY")
+    # -- Coder surface: Claude Agent SDK (PRD §4 / §4a) --------------------- #
+    #: ``subscription`` (default) runs on the logged-in ``claude`` plan tokens
+    #: and must have NO api key; ``api_key`` uses the Platform key below.
+    coder_auth_mode: AuthMode = Field(
+        default=DEFAULT_AUTH_MODE, alias="CODER_AUTH_MODE"
+    )
+    #: Platform API key — only set (and required) under ``api_key`` auth mode.
+    anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     coder_model: str = Field(default=DEFAULT_CODER_MODEL, alias="CODER_MODEL")
 
     # -- Reasoning + verifier surface: LiteLLM gateway (PRD §4) ------------- #
@@ -112,6 +124,27 @@ class Settings(BaseSettings):
     # -- Telegram notifications (optional) ---------------------------------- #
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
+
+    @model_validator(mode="after")
+    def check_coder_auth(self) -> Settings:
+        """Fail closed on the coder auth mode (PRD §4a).
+
+        Under ``subscription`` a present ``ANTHROPIC_API_KEY`` (in ``.env`` *or*
+        the process env — pydantic-settings reads both) would silently flip the
+        Agent SDK onto pay-as-you-go, so we reject it outright. Under ``api_key``
+        the key is mandatory.
+        """
+        if self.coder_auth_mode == "subscription" and self.anthropic_api_key:
+            raise ValueError(
+                "CODER_AUTH_MODE=subscription requires ANTHROPIC_API_KEY to be "
+                "UNSET (a stray key silently switches the coder to pay-as-you-go). "
+                "Unset it, or set CODER_AUTH_MODE=api_key to bill per token."
+            )
+        if self.coder_auth_mode == "api_key" and not self.anthropic_api_key:
+            raise ValueError(
+                "CODER_AUTH_MODE=api_key requires ANTHROPIC_API_KEY to be set."
+            )
+        return self
 
 
 def load_settings(**overrides: Any) -> Settings:

@@ -52,10 +52,11 @@ from stromboli.nodes import (
     make_route_after_verdict,
     make_spec,
     make_verifier,
+    route_after_coding,
 )
 from stromboli.nodes.coding import WorktreeFor
 from stromboli.nodes.intake import NotionReader
-from stromboli.nodes.router import CODING, HUMAN, PR, route_after_spec
+from stromboli.nodes.router import CODING, HUMAN, PR, VERIFIER, route_after_spec
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import TestSandbox, Worktree
 from stromboli.settings import Settings, load_settings
@@ -200,7 +201,11 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
     builder.add_conditional_edges(
         "spec", route_after_spec, {CODING: "coding", HUMAN: "human"}
     )
-    builder.add_edge("coding", "verifier")
+    # A rate-limit cutoff escalates to the human interrupt (PRD §4a); otherwise
+    # coding proceeds to verification.
+    builder.add_conditional_edges(
+        "coding", route_after_coding, {VERIFIER: "verifier", HUMAN: "human"}
+    )
     builder.add_conditional_edges(
         "verifier",
         make_route_after_verdict(deps.budgets),
@@ -344,6 +349,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     coder = AgentCoder(
         model=config.models.coder,
         api_key=settings.anthropic_api_key,
+        auth_mode=config.auth_mode,
         max_turns=config.budgets.max_inner_turns,
     )
     return GraphDeps(

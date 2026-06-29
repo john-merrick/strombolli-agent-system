@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
+    RateLimitEvent,
     ResultMessage,
     TextBlock,
     ToolUseBlock,
 )
 
-from stromboli.llm.coder import AgentCoder, CoderError
+from stromboli.llm.coder import AgentCoder, CoderError, RateLimitError
 
 
 def _assistant(*tools: str, text: str = "") -> AssistantMessage:
@@ -56,6 +58,7 @@ def test_coder_captures_diff_session_and_turns() -> None:
     coder = AgentCoder(
         model="claude-opus-4-8",
         api_key="sk-platform",
+        auth_mode="api_key",
         query_fn=query,
         diff_fn=lambda _p: "diff --git a/x b/x\n+ok",
         max_turns=10,
@@ -104,10 +107,13 @@ def test_resume_is_passed_through() -> None:
     assert captured["options"].resume == "sess-prev"
 
 
-def test_permission_gate_allows_allowlist_denies_rest() -> None:
+def test_permission_gate_allows_allowlist_denies_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import asyncio
 
-    coder = AgentCoder(model="m", api_key="k", allowed_tools=("Read", "Bash"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    coder = AgentCoder(model="m", allowed_tools=("Read", "Bash"))
 
     async def check() -> None:
         allow = await coder._gate("Read", {}, None)  # type: ignore[arg-type]
@@ -117,3 +123,49 @@ def test_permission_gate_allows_allowlist_denies_rest() -> None:
         assert deny.interrupt is False  # fail closed, never hang
 
     asyncio.run(check())
+
+
+# --- auth modes (PRD §4a) ------------------------------------------------- #
+def test_subscription_mode_passes_no_api_key_to_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    query, captured = _fake_query([_result("success")])
+    coder = AgentCoder(model="m", query_fn=query, diff_fn=lambda _p: "")
+    assert coder.auth_mode == "subscription"  # the default
+    coder.run("x", "/tmp/wt")
+    # No api key is handed to the SDK → it runs on the logged-in plan tokens.
+    assert "ANTHROPIC_API_KEY" not in captured["options"].env
+
+
+def test_subscription_guardrail_rejects_stray_env_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-stray")
+    with pytest.raises(CoderError):
+        AgentCoder(model="m")  # subscription default + stray key → fail closed
+
+
+def test_api_key_mode_requires_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(CoderError):
+        AgentCoder(model="m", auth_mode="api_key")  # no key supplied
+
+
+# --- rate-limit cutoff (PRD §4a) ------------------------------------------ #
+def test_rate_limit_raises_retryable_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    event = RateLimitEvent(
+        rate_limit_info=SimpleNamespace(  # type: ignore[arg-type]
+            status="rejected", resets_at="2026-07-01T00:00:00Z"
+        ),
+        uuid="rl-1",
+        session_id="sess-rl",
+    )
+    query, _ = _fake_query([_assistant("Bash"), event])
+    coder = AgentCoder(model="m", query_fn=query, diff_fn=lambda _p: "")
+    with pytest.raises(RateLimitError) as exc:
+        coder.run("x", "/tmp/wt")
+    # The session is captured so the caller can resume after the window.
+    assert exc.value.session_id == "sess-rl"
+    assert exc.value.resets_at == "2026-07-01T00:00:00Z"

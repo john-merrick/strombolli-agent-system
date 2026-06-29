@@ -17,7 +17,6 @@ _ENV = {
     "NOTION_TOKEN": "n",
     "NOTION_TASK_DB_ID": "db",
     "GITHUB_TOKEN": "g",
-    "ANTHROPIC_API_KEY": "a",
     "LITELLM_BASE_URL": "http://proxy",
     "LITELLM_API_KEY": "k",
     "LANGFUSE_PUBLIC_KEY": "pk",

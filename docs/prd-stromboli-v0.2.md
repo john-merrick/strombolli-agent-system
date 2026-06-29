@@ -85,11 +85,24 @@ Runs on the Mac Mini M4 (production) with GitHub CI as the external gate.
 
 ---
 
+## 4a. Coder Auth & Billing
+
+The coding node authenticates per a config switch, `CODER_AUTH_MODE` (`config.auth_mode`):
+
+- **`subscription` (default)** — log in once with `claude` using your subscription account and leave `ANTHROPIC_API_KEY` **unset** for the coding-node process; the Agent SDK then runs on your **plan tokens**. Guardrail (coded defensively): the runtime **asserts at startup that `ANTHROPIC_API_KEY` is absent** when `auth_mode == "subscription"` (checked in both `Settings` and `AgentCoder`), because a stray env var silently flips you onto pay-as-you-go with no error. Current billing state is *paused*, so subscription is the live path.
+- **`api_key`** — pass a Platform API key for predictable per-token billing; required in this mode.
+
+**Billing-aware budget framing.** Under subscription the binding constraint is the **rate-limit window**, not dollars — so `MAX_TOKENS_PER_TASK` is a backstop ceiling, not the primary control.
+
+**Rate-limit mid-run cutoff = the real risk** for an unattended pipeline. A rate-limit error is treated as a **retryable escalation**, not a crash: `llm/coder.py` detects the SDK `RateLimitEvent` (status `rejected`) / `rate_limit` error, raises a typed `RateLimitError` carrying the `session_id` (+ `resets_at`); the coding node escalates to the Human Interrupt **preserving the session**, so a resume after the window continues the same SDK session via `--resume` rather than starting cold. This — alongside the `auth_mode` switch and the tool allowlist — is the part of `coder.py` most worth getting right.
+
+---
+
 ## 5. State Schema
 
 Single object, narrow and semantic. Reducers: append-only fields are `test_results` and `reflections`; everything else overwrites. Implemented in `src/stromboli/state.py` (`StromboliState`, `Spec`, `Verdict`, `TestResult`).
 
-Budgets (config, not hardcoded): `MAX_INNER_TURNS` (Agent SDK agent-loop turns per coding attempt — inner recursion bound), `MAX_OUTER_REVISIONS` (revise-edge cap before escalate — outer recursion bound), `MAX_TOKENS_PER_TASK` (hard cost ceiling across both model surfaces).
+Budgets (config, not hardcoded): `MAX_INNER_TURNS` (Agent SDK agent-loop turns per coding attempt — inner recursion bound), `MAX_OUTER_REVISIONS` (revise-edge cap before escalate — outer recursion bound), `MAX_TOKENS_PER_TASK` (backstop cost ceiling across both surfaces — under subscription auth the binding constraint is the rate-limit window, not dollars; see §4a).
 
 ---
 
@@ -105,7 +118,7 @@ Budgets (config, not hardcoded): `MAX_INNER_TURNS` (Agent SDK agent-loop turns p
 - Reads `spec.ambiguous`. → Human Interrupt if true, else → Coding Node.
 
 ### 6.4 Coding Node — Claude Agent SDK (inner recursive loop)
-- The SDK's agent loop is the write→test→fix loop. We only **bound** it (`MAX_INNER_TURNS` + token ceiling), **constrain** it (tool allowlist, fail-closed perms), and **capture** it (diff, last test output, message stream, `session_id`). Only oracle = the sandbox test run. No irreversible actions. **DoD:** known-good spec → passing diff in budget; impossible spec → clean budget exit; non-`success` subtype → node failure.
+- The SDK's agent loop is the write→test→fix loop. We only **bound** it (`MAX_INNER_TURNS` + token ceiling), **constrain** it (tool allowlist, fail-closed perms), **authenticate** it per `CODER_AUTH_MODE` (§4a), and **capture** it (diff, last test output, message stream, `session_id`). Only oracle = the sandbox test run. No irreversible actions. A **rate-limit cutoff** (§4a) is a retryable escalation: the node escalates to the Human Interrupt preserving `session_id` for a later resume, never crashing. **DoD:** known-good spec → passing diff in budget; impossible spec → clean budget exit; non-`success` subtype → node failure; a rate-limit mid-run → escalation with the session preserved.
 
 ### 6.5 Reflective Verifier (outer recursive loop)
 - Single structured call via LiteLLM on a non-Claude model. Checks the diff against spec intent and whether tests covered the acceptance criteria. On `revise`, the reason is injected into the next Coding Node pass (resuming `session_id`); bounded by `MAX_OUTER_REVISIONS`.

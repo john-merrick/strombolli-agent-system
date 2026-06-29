@@ -9,9 +9,10 @@ observability and a three-tier ChromaDB memory.
 ## The two model surfaces (do not blur them)
 
 - **Coder** — the Claude **Agent SDK** (`claude-agent-sdk`). Its agent loop *is*
-  the recursive write→test→fix loop (the inner recursion). Auth via a **Platform
-  API key** (`ANTHROPIC_API_KEY`). Code lives in `llm/coder.py`. **Never**
-  reimplement this loop by hand.
+  the recursive write→test→fix loop (the inner recursion). Auth via
+  `CODER_AUTH_MODE` (§4a): **`subscription`** (default) runs on the logged-in
+  `claude` plan tokens with **no** `ANTHROPIC_API_KEY`; **`api_key`** bills per
+  token. Code lives in `llm/coder.py`. **Never** reimplement this loop by hand.
 - **Reasoning + verifier** — single structured calls through the **LiteLLM
   gateway** (`llm/gateway.py`): spec, router, memory, and the verifier. The
   verifier runs on a **non-Claude** model (Gemini 2.5 Pro) for independent
@@ -45,6 +46,9 @@ observability and a three-tier ChromaDB memory.
   spins.
 - Pre-approve exactly the tools a job needs and **fail closed** on permissions —
   an unattended run must never hang on a prompt.
+- Under `subscription` auth, **assert `ANTHROPIC_API_KEY` is absent** — a stray
+  key silently flips to pay-as-you-go. A **rate-limit cutoff** is a retryable
+  escalation (preserve `session_id`, resume after the window), never a crash.
 
 ## Working in this repo
 

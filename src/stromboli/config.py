@@ -18,10 +18,18 @@ into ``Settings`` directly and give tests a trivial way to construct budgets.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from stromboli.settings import Settings
+
+#: How the coder (Agent SDK) authenticates (PRD §4a):
+#: * ``subscription`` — run on the logged-in ``claude`` plan tokens; the process
+#:   must have **no** ``ANTHROPIC_API_KEY`` (a stray one silently flips to
+#:   pay-as-you-go). This is the default.
+#: * ``api_key`` — a Platform API key for predictable per-token billing.
+AuthMode = Literal["subscription", "api_key"]
+DEFAULT_AUTH_MODE: AuthMode = "subscription"
 
 #: The default coder model — Claude, reached through the Agent SDK (PRD §4).
 DEFAULT_CODER_MODEL = "claude-opus-4-8"
@@ -33,13 +41,19 @@ DEFAULT_VERIFIER_MODEL = "gemini/gemini-2.5-pro"
 
 @dataclass(frozen=True)
 class Budgets:
-    """The recursion + cost bounds for a single task (PRD §5)."""
+    """The recursion + cost bounds for a single task (PRD §5).
+
+    Note (PRD §4a): under ``subscription`` auth the binding constraint is the
+    plan's **rate-limit window**, not dollars — a rate-limit cutoff is handled as
+    a retryable escalation (pause + resume the SDK session), so
+    ``max_tokens_per_task`` is a backstop ceiling, not the primary control.
+    """
 
     #: Cap on the Agent SDK agent-loop turns per coding attempt (inner recursion).
     max_inner_turns: int = 25
     #: Cap on verifier revise edges before escalate (outer recursion).
     max_outer_revisions: int = 3
-    #: Hard cost ceiling across both model surfaces, in tokens, per task.
+    #: Backstop token ceiling across both model surfaces, per task.
     max_tokens_per_task: int = 2_000_000
 
     def __post_init__(self) -> None:
@@ -69,6 +83,8 @@ class Config:
 
     budgets: Budgets
     models: Models
+    #: How the coder authenticates (PRD §4a).
+    auth_mode: AuthMode = DEFAULT_AUTH_MODE
 
 
 def from_settings(settings: Settings) -> Config:
@@ -84,13 +100,16 @@ def from_settings(settings: Settings) -> Config:
             reasoning=settings.reasoning_model,
             verifier=settings.verifier_model,
         ),
+        auth_mode=settings.coder_auth_mode,
     )
 
 
 __all__ = [
+    "DEFAULT_AUTH_MODE",
     "DEFAULT_CODER_MODEL",
     "DEFAULT_REASONING_MODEL",
     "DEFAULT_VERIFIER_MODEL",
+    "AuthMode",
     "Budgets",
     "Config",
     "Models",

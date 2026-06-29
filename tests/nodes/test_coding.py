@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from stromboli.llm.coder import CoderError, CoderRun, TurnRecord
+from stromboli.llm.coder import CoderError, CoderRun, RateLimitError, TurnRecord
 from stromboli.nodes.coding import _build_prompt, make_coding
 from stromboli.sandbox.runner import SandboxResult
 from stromboli.state import Spec, StromboliState, Verdict
@@ -108,6 +108,22 @@ def test_revise_pass_resumes_session_and_injects_reason() -> None:
     prompt, resume = coder.calls[0]
     assert resume == "sess-prev"
     assert "missed acceptance criterion 2" in prompt
+
+
+class RateLimitedCoder:
+    def run(self, prompt: str, cwd: object, *, resume: str | None = None) -> CoderRun:
+        raise RateLimitError(session_id="sess-live", resets_at="2026-07-01T00:00:00Z")
+
+
+def test_rate_limit_escalates_and_preserves_session() -> None:
+    sandbox = FakeSandbox(SandboxResult(passed=True, output="", exit_code=0))
+    node = make_coding(RateLimitedCoder(), sandbox, lambda _s: make_worktree())
+    out = node(_state())
+    # Retryable escalation (PRD §4a): escalate, keep the session for resume.
+    assert out["status"] == "escalated"
+    assert out["session_id"] == "sess-live"
+    reflections = out["reflections"]
+    assert isinstance(reflections, list) and "rate-limited" in reflections[0]
 
 
 def test_build_prompt_includes_spec_sections() -> None:

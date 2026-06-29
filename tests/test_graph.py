@@ -6,7 +6,11 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from stromboli.config import Budgets
 from stromboli.graph import GraphDeps, build_graph, run_task
-from stromboli.nodes.router import make_route_after_verdict, route_after_spec
+from stromboli.nodes.router import (
+    make_route_after_verdict,
+    route_after_coding,
+    route_after_spec,
+)
 from stromboli.state import Spec, StromboliState, Verdict
 
 
@@ -82,6 +86,17 @@ def test_verdict_gate_escalate_to_human() -> None:
         verdict=Verdict(decision="escalate", reason="needs human"),
     )
     assert gate(state) == "human"
+
+
+def test_route_after_coding_escalates_on_rate_limit() -> None:
+    # Coding sets status=escalated on a rate-limit cutoff (PRD §4a) → human.
+    escalated = StromboliState(
+        task_id="t", source="cli", raw_request="x", status="escalated"
+    )
+    assert route_after_coding(escalated) == "human"
+    # A normal coding pass proceeds to verification.
+    normal = StromboliState(task_id="t", source="cli", raw_request="x", status="coding")
+    assert route_after_coding(normal) == "verifier"
 
 
 def test_build_graph_is_compilable() -> None:
