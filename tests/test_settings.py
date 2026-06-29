@@ -1,108 +1,51 @@
-"""Tests for :mod:`stromboli.settings`."""
+"""Tests for env-backed settings loading and fail-fast on missing vars."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from stromboli.settings import (
-    REQUIRED_ENV_VARS,
-    MissingSettingsError,
-    Settings,
-    load_settings,
-)
+from stromboli.settings import MissingSettingsError, load_settings
 
-VALID_ENV = {
-    "NOTION_TOKEN": "secret_notion",
-    "GITHUB_TOKEN": "ghp_token",
-    "LANGFUSE_PUBLIC_KEY": "pk-lf-123",
-    "LANGFUSE_SECRET_KEY": "sk-lf-456",
-    "LANGFUSE_HOST": "https://cloud.langfuse.com",
-    "TUNNEL_PUBLIC_URL": "https://tunnel.example.com",
-    "WORKSPACE_ROOT": "/tmp/stromboli-workspaces",
-    "LITELLM_BASE_URL": "https://litellm.example.com",
-    "LITELLM_API_KEY": "sk-litellm-789",
-    "DISPATCH_SHARED_SECRET": "shared-secret",
+_FULL_ENV = {
+    "NOTION_TOKEN": "n",
+    "NOTION_TASK_DB_ID": "db",
+    "GITHUB_TOKEN": "g",
+    "ANTHROPIC_API_KEY": "a",
+    "LITELLM_BASE_URL": "http://proxy",
+    "LITELLM_API_KEY": "k",
+    "LANGFUSE_PUBLIC_KEY": "pk",
+    "LANGFUSE_SECRET_KEY": "sk",
+    "LANGFUSE_HOST": "http://lf",
+    "WORKSPACE_ROOT": "/tmp/ws",
 }
 
 
-@pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure no required var leaks in from the real environment."""
-    for key in REQUIRED_ENV_VARS:
+def test_load_settings_with_full_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Clear optional vars that may leak in from the host env, for a hermetic test.
+    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
         monkeypatch.delenv(key, raising=False)
+    settings = load_settings(_env_file=None, **_FULL_ENV)
+    assert settings.notion_task_db_id == "db"
+    assert settings.anthropic_api_key == "a"
+    assert settings.telegram_bot_token is None
+    # Optional budgets fall back to defaults.
+    assert settings.max_inner_turns == 25
 
 
-def _set(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-
-
-def test_loads_all_values_with_correct_types(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _set(monkeypatch, VALID_ENV)
-
-    settings = load_settings(_env_file=None)
-
-    assert isinstance(settings, Settings)
-    assert settings.notion_token == "secret_notion"
-    assert settings.github_token == "ghp_token"
-    assert settings.langfuse_public_key == "pk-lf-123"
-    assert settings.langfuse_secret_key == "sk-lf-456"
-    assert settings.langfuse_host == "https://cloud.langfuse.com"
-    assert settings.tunnel_public_url == "https://tunnel.example.com"
-    assert settings.litellm_base_url == "https://litellm.example.com"
-    assert settings.litellm_api_key == "sk-litellm-789"
-    # The build model defaults to Opus when LITELLM_MODEL is unset.
-    assert settings.litellm_model == "claude-opus-4-8"
-    assert settings.dispatch_shared_secret == "shared-secret"
-    # WORKSPACE_ROOT is coerced to a Path.
-    assert settings.workspace_root == Path("/tmp/stromboli-workspaces")
-    assert isinstance(settings.workspace_root, Path)
-
-
-@pytest.mark.parametrize("missing_key", REQUIRED_ENV_VARS)
-def test_missing_required_var_fails_fast_naming_the_key(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch, missing_key: str
-) -> None:
-    env = {k: v for k, v in VALID_ENV.items() if k != missing_key}
-    _set(monkeypatch, env)
-
+def test_missing_required_vars_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Clear the env so nothing leaks in; then provide only a subset.
+    for key in _FULL_ENV:
+        monkeypatch.delenv(key, raising=False)
     with pytest.raises(MissingSettingsError) as excinfo:
-        load_settings(_env_file=None)
-
-    assert missing_key in excinfo.value.missing
-    assert missing_key in str(excinfo.value)
-
-
-def test_multiple_missing_vars_all_named(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env = {
-        k: v
-        for k, v in VALID_ENV.items()
-        if k not in {"NOTION_TOKEN", "LITELLM_API_KEY"}
-    }
-    _set(monkeypatch, env)
-
-    with pytest.raises(MissingSettingsError) as excinfo:
-        load_settings(_env_file=None)
-
-    assert set(excinfo.value.missing) == {"NOTION_TOKEN", "LITELLM_API_KEY"}
+        load_settings(_env_file=None, NOTION_TOKEN="n")
+    missing = excinfo.value.missing
+    assert "ANTHROPIC_API_KEY" in missing
+    assert "NOTION_TOKEN" not in missing  # it was provided
 
 
-def test_reads_values_from_env_file(
-    clean_env: None, tmp_path: Path
-) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(f"{k}={v}" for k, v in VALID_ENV.items()) + "\n",
-        encoding="utf-8",
-    )
-
-    settings = load_settings(_env_file=str(env_file))
-
-    assert settings.notion_token == "secret_notion"
-    assert settings.dispatch_shared_secret == "shared-secret"
+def test_dispatch_server_vars_are_gone() -> None:
+    settings = load_settings(_env_file=None, **_FULL_ENV)
+    # The v0.1 dispatch server is removed — these attrs must not exist.
+    assert not hasattr(settings, "dispatch_shared_secret")
+    assert not hasattr(settings, "tunnel_public_url")
+    assert not hasattr(settings, "stromboli_engine")

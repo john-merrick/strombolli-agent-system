@@ -1,0 +1,202 @@
+"""Langfuse observability — one trace per task across both surfaces (PRD §8).
+
+Every graph node emits a Langfuse **span** under a single per-task **trace**
+correlated by ``task_id``. The coding node nests the Agent SDK message stream
+(per-turn tool calls + token usage) as **child** spans of its node span, and the
+LiteLLM gateway nodes (spec / router / verifier / memory) span on the reasoning
+surface — so a single Langfuse trace covers the whole task across SDK + gateway.
+
+The tracer is an injectable seam:
+
+* :class:`NullTracer` — the no-op default, used wherever Langfuse is not
+  configured (and in every test). Its spans are inert.
+* :class:`LangfuseTracer` — sends to Langfuse via the lazily-imported SDK; a
+  missing package / credentials degrades to the no-op rather than crashing.
+
+Spans are context managers:
+
+    with tracer.node("spec", metadata={...}) as span:
+        ...
+        span.child("sdk-turn-1", metadata={"tokens": 1234})
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from types import TracebackType
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+class Span:
+    """A no-op span. Subclasses record onto a backend. Usable as a CM."""
+
+    def child(self, name: str, *, metadata: dict[str, Any] | None = None) -> Span:
+        """Open a nested child span (e.g. one Agent SDK turn). No-op by default."""
+        return self
+
+    def update(self, **metadata: Any) -> None:
+        """Attach metadata to the span. No-op by default."""
+
+    def end(self) -> None:
+        """Close the span. No-op by default."""
+
+    def __enter__(self) -> Span:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.end()
+
+
+class BuildTracer:
+    """No-op tracer base. Subclasses send the calls to a backend."""
+
+    def start(self, *, task_id: str, name: str) -> None:
+        """Open the per-task trace, correlated by ``task_id``."""
+
+    def node(self, name: str, *, metadata: dict[str, Any] | None = None) -> Span:
+        """Open a node span on the trace (e.g. ``spec``, ``coding``)."""
+        return Span()
+
+    def tag(self, *tags: str) -> None:
+        """Tag the trace (e.g. ``escalated``, ``failure``)."""
+
+    def finish(self, *, error: str | None = None) -> None:
+        """Close the trace, flushing if the backend needs it."""
+
+
+class NullTracer(BuildTracer):
+    """The default tracer: does nothing. Used when Langfuse is not configured."""
+
+
+@contextmanager
+def traced_node(
+    tracer: BuildTracer, name: str, *, metadata: dict[str, Any] | None = None
+) -> Iterator[Span]:
+    """Open a node span, guaranteeing it is closed — and never failing a run.
+
+    Tracing must never break the build, so any backend error inside the span is
+    logged and swallowed (the node's own exceptions still propagate).
+    """
+    span = tracer.node(name, metadata=metadata)
+    try:
+        yield span
+    finally:
+        try:
+            span.end()
+        except Exception as exc:  # noqa: BLE001 - tracing must never fail a build
+            logger.warning("Span %s end failed: %s", name, exc)
+
+
+class _LangfuseSpan(Span):
+    """A Langfuse span/observation wrapper (best-effort; never raises out)."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+
+    def child(self, name: str, *, metadata: dict[str, Any] | None = None) -> Span:
+        try:
+            return _LangfuseSpan(self._handle.span(name=name, metadata=metadata or {}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Langfuse child span failed: %s", exc)
+            return Span()
+
+    def update(self, **metadata: Any) -> None:
+        try:
+            self._handle.update(metadata=metadata)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Langfuse span update failed: %s", exc)
+
+    def end(self) -> None:
+        try:
+            self._handle.end()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Langfuse span end failed: %s", exc)
+
+
+class LangfuseTracer(BuildTracer):
+    """Sends the per-task trace to Langfuse via the (lazily imported) SDK."""
+
+    def __init__(self, *, public_key: str, secret_key: str, host: str) -> None:
+        # Lazy import: ``langfuse`` is an optional dependency. The client is held
+        # as ``Any`` because the SDK surface varies across major versions; every
+        # call is best-effort. Targets the v2 ``trace`` API — verify against the
+        # deployed SDK version when wiring it live.
+        import importlib
+
+        langfuse_mod = importlib.import_module("langfuse")
+        self._client: Any = langfuse_mod.Langfuse(
+            public_key=public_key, secret_key=secret_key, host=host
+        )
+        self._trace: Any = None
+
+    def start(self, *, task_id: str, name: str) -> None:
+        try:
+            self._trace = self._client.trace(name=name, metadata={"task_id": task_id})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Langfuse trace start failed: %s", exc)
+            self._trace = None
+
+    def node(self, name: str, *, metadata: dict[str, Any] | None = None) -> Span:
+        if self._trace is None:
+            return Span()
+        try:
+            return _LangfuseSpan(self._trace.span(name=name, metadata=metadata or {}))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Langfuse node span failed: %s", exc)
+            return Span()
+
+    def tag(self, *tags: str) -> None:
+        if self._trace is not None:
+            try:
+                self._trace.update(tags=list(tags))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Langfuse tag failed: %s", exc)
+
+    def finish(self, *, error: str | None = None) -> None:
+        try:
+            if self._trace is not None and error is not None:
+                self._trace.update(level="ERROR", status_message=error)
+            self._client.flush()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Langfuse finish failed: %s", exc)
+
+
+def build_tracer(
+    *,
+    enabled: bool = True,
+    public_key: str | None = None,
+    secret_key: str | None = None,
+    host: str | None = None,
+) -> BuildTracer:
+    """Construct the active tracer, falling back to :class:`NullTracer`.
+
+    Returns a :class:`NullTracer` when disabled, when credentials are missing,
+    or when the ``langfuse`` package is not installed — so observability is
+    strictly best-effort and never blocks a run.
+    """
+    if not (enabled and public_key and secret_key and host):
+        return NullTracer()
+    try:
+        return LangfuseTracer(public_key=public_key, secret_key=secret_key, host=host)
+    except Exception as exc:  # noqa: BLE001 - degrade rather than crash
+        logger.warning("Langfuse unavailable (%s); tracing disabled.", exc)
+        return NullTracer()
+
+
+__all__ = [
+    "BuildTracer",
+    "LangfuseTracer",
+    "NullTracer",
+    "Span",
+    "build_tracer",
+    "traced_node",
+]

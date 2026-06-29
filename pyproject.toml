@@ -1,15 +1,19 @@
 [project]
 name = "stromboli"
-version = "0.1.0"
-description = "Stromboli — agentic coding-triage worker that builds Notion-spec'd tasks via the Ralph loop."
+version = "0.2.0"
+description = "Stromboli — an explicit LangGraph state machine for agentic coding triage."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.138.0",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=2",
+    "litellm>=1.40",
+    "claude-agent-sdk>=0.1",
+    "chromadb>=0.5",
+    "langfuse>=2",
     "httpx>=0.27",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
-    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -17,9 +21,6 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
     "mypy>=1.10",
-]
-observability = [
-    "langfuse>=2",
 ]
 
 [build-system]
@@ -32,8 +33,6 @@ packages = ["src/stromboli"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
-# `scripts/` holds the Ralph control-plane machinery, not project code.
-extend-exclude = ["scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "W"]
@@ -46,6 +45,9 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Tests are functions, never classes — so domain models named ``Test*`` (e.g.
+# ``TestResult``) are not mistaken for test cases.
+python_classes = ["*Tests"]
 
 [dependency-groups]
 dev = [

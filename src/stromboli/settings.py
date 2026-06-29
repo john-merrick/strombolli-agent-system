@@ -4,28 +4,43 @@ All configuration is sourced from environment variables (optionally backed by a
 ``.env`` file in the project root). Every variable in :data:`REQUIRED_ENV_VARS`
 is mandatory; if any is missing, :func:`load_settings` fails fast with a
 :class:`MissingSettingsError` that names the offending key(s).
+
+The two model surfaces (PRD §4) authenticate differently:
+
+* the **coder** (Claude Agent SDK) uses a **Platform API key**
+  (:attr:`Settings.anthropic_api_key`) for predictable per-token cost; and
+* the **reasoning + verifier** calls go through the **LiteLLM gateway**
+  (:attr:`Settings.litellm_base_url` + :attr:`Settings.litellm_api_key`), which
+  maps model names to providers — so the non-Claude verifier needs no separate
+  provider key here.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from stromboli.config import (
+    DEFAULT_CODER_MODEL,
+    DEFAULT_REASONING_MODEL,
+    DEFAULT_VERIFIER_MODEL,
+)
+
 #: The environment variables Stromboli requires to run, in declaration order.
 REQUIRED_ENV_VARS: tuple[str, ...] = (
     "NOTION_TOKEN",
+    "NOTION_TASK_DB_ID",
     "GITHUB_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "LITELLM_BASE_URL",
+    "LITELLM_API_KEY",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_HOST",
-    "TUNNEL_PUBLIC_URL",
     "WORKSPACE_ROOT",
-    "LITELLM_BASE_URL",
-    "LITELLM_API_KEY",
-    "DISPATCH_SHARED_SECRET",
 )
 
 
@@ -42,7 +57,7 @@ class MissingSettingsError(RuntimeError):
 
 
 class Settings(BaseSettings):
-    """Typed, validated runtime configuration for the Stromboli worker."""
+    """Typed, validated runtime configuration for the Stromboli graph runtime."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -51,29 +66,50 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # -- Intake (Notion is the front-end for adding tasks) ------------------ #
     notion_token: str = Field(alias="NOTION_TOKEN")
+    #: The Notion database the Intake source reads "Ready" tasks from.
+    notion_task_db_id: str = Field(alias="NOTION_TASK_DB_ID")
+
+    # -- GitHub (PR / Commit node) ------------------------------------------ #
     github_token: str = Field(alias="GITHUB_TOKEN")
+
+    # -- Coder surface: Claude Agent SDK, Platform API key (PRD §4) --------- #
+    anthropic_api_key: str = Field(alias="ANTHROPIC_API_KEY")
+    coder_model: str = Field(default=DEFAULT_CODER_MODEL, alias="CODER_MODEL")
+
+    # -- Reasoning + verifier surface: LiteLLM gateway (PRD §4) ------------- #
+    litellm_base_url: str = Field(alias="LITELLM_BASE_URL")
+    litellm_api_key: str = Field(alias="LITELLM_API_KEY")
+    reasoning_model: str = Field(
+        default=DEFAULT_REASONING_MODEL, alias="REASONING_MODEL"
+    )
+    #: The non-Claude verifier model (PRD §11.1, pinned to Gemini 2.5 Pro).
+    verifier_model: str = Field(default=DEFAULT_VERIFIER_MODEL, alias="VERIFIER_MODEL")
+
+    # -- Observability ------------------------------------------------------ #
     langfuse_public_key: str = Field(alias="LANGFUSE_PUBLIC_KEY")
     langfuse_secret_key: str = Field(alias="LANGFUSE_SECRET_KEY")
     langfuse_host: str = Field(alias="LANGFUSE_HOST")
-    tunnel_public_url: str = Field(alias="TUNNEL_PUBLIC_URL")
-    workspace_root: Path = Field(alias="WORKSPACE_ROOT")
-    #: The build agent (``claude -p``) is routed through a LiteLLM proxy rather
-    #: than the Anthropic API directly: a base URL + virtual key, pinned to Opus.
-    litellm_base_url: str = Field(alias="LITELLM_BASE_URL")
-    litellm_api_key: str = Field(alias="LITELLM_API_KEY")
-    litellm_model: str = Field(default="claude-opus-4-8", alias="LITELLM_MODEL")
-    dispatch_shared_secret: str = Field(alias="DISPATCH_SHARED_SECRET")
 
-    #: Which build engine to use. Optional; defaults to the legacy Ralph loop so
-    #: existing behaviour is unchanged until ``graph`` is deliberately selected.
-    stromboli_engine: Literal["ralph", "graph"] = Field(
-        default="ralph", alias="STROMBOLI_ENGINE"
+    # -- Filesystem --------------------------------------------------------- #
+    #: Absolute path under which per-task git worktrees + sandbox state live.
+    workspace_root: Path = Field(alias="WORKSPACE_ROOT")
+    #: Where ChromaDB persists its three memory collections.
+    chroma_persist_dir: Path = Field(
+        default=Path(".stromboli/chroma"), alias="CHROMA_PERSIST_DIR"
+    )
+    #: The LangGraph checkpointer SQLite file (dev; Postgres deferred, §11.3).
+    checkpoint_db_path: Path = Field(
+        default=Path(".stromboli/checkpoints.db"), alias="CHECKPOINT_DB_PATH"
     )
 
-    #: Telegram alert bot token + target chat id (optional). When both are set,
-    #: build-lifecycle notifications are pushed to the chat. Resolve from a secret
-    #: manager (e.g. 1Password ``op inject``/``op run``) at deploy time.
+    # -- Recursion + cost budgets (PRD §5) ---------------------------------- #
+    max_inner_turns: int = Field(default=25, alias="MAX_INNER_TURNS")
+    max_outer_revisions: int = Field(default=3, alias="MAX_OUTER_REVISIONS")
+    max_tokens_per_task: int = Field(default=2_000_000, alias="MAX_TOKENS_PER_TASK")
+
+    # -- Telegram notifications (optional) ---------------------------------- #
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
 
@@ -86,7 +122,6 @@ def load_settings(**overrides: Any) -> Settings:
     bypass ``.env`` discovery). On a ``missing``-type validation error the env
     var names are collected and surfaced via :class:`MissingSettingsError`.
     """
-
     try:
         return Settings(**overrides)
     except ValidationError as exc:
@@ -100,3 +135,6 @@ def load_settings(**overrides: Any) -> Settings:
             ordered = [key for key in REQUIRED_ENV_VARS if key in set(missing)]
             raise MissingSettingsError(ordered) from exc
         raise
+
+
+__all__ = ["REQUIRED_ENV_VARS", "MissingSettingsError", "Settings", "load_settings"]
