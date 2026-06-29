@@ -152,6 +152,52 @@ def test_api_key_mode_requires_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
         AgentCoder(model="m", auth_mode="api_key")  # no key supplied
 
 
+def _raising_query(messages: list[Any], exc: Exception) -> Any:
+    async def query(*, prompt: Any, options: Any) -> AsyncIterator[Any]:
+        for m in messages:
+            yield m
+        raise exc
+
+    return query
+
+
+# --- SDK-raised terminals in streaming mode (PRD §6.4 / §4a) -------------- #
+def test_sdk_raised_max_turns_is_clean_budget_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    q = _raising_query(
+        [_assistant("Bash")],
+        Exception("Claude Code returned an error result: Reached maximum number of turns (25)"),
+    )
+    coder = AgentCoder(model="m", query_fn=q, diff_fn=lambda _p: "diff --git a\n+x")
+    run = coder.run("x", "/tmp/wt")
+    # Bounded budget exit — captured, not a crash; the partial diff is kept.
+    assert run.clean is True
+    assert run.subtype == "error_max_turns"
+    assert run.diff == "diff --git a\n+x"
+
+
+def test_sdk_raised_rate_limit_becomes_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    q = _raising_query([_assistant("Bash")], Exception("API rate limit exceeded"))
+    coder = AgentCoder(model="m", query_fn=q, diff_fn=lambda _p: "")
+    with pytest.raises(RateLimitError):
+        coder.run("x", "/tmp/wt")
+
+
+def test_sdk_raised_other_error_is_coder_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    q = _raising_query([], Exception("unexpected boom"))
+    coder = AgentCoder(model="m", query_fn=q, diff_fn=lambda _p: "")
+    with pytest.raises(CoderError):
+        coder.run("x", "/tmp/wt")
+
+
 # --- rate-limit cutoff (PRD §4a) ------------------------------------------ #
 def test_rate_limit_raises_retryable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

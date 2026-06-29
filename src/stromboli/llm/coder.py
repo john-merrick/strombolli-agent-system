@@ -199,6 +199,27 @@ class AgentCoder:
             env=env,
         )
 
+    def _budget_exit(
+        self,
+        cwd: Path,
+        final_text: str,
+        turns: list[TurnRecord],
+        session_id: str | None,
+    ) -> CoderRun:
+        """A clean ``error_max_turns`` outcome capturing the partial diff."""
+        assert self.diff_fn is not None
+        return CoderRun(
+            diff=self.diff_fn(cwd),
+            final_text=final_text,
+            turns=len(turns) or self.max_turns,
+            session_id=session_id,
+            subtype="error_max_turns",
+            is_error=False,
+            cost_usd=None,
+            usage=None,
+            turn_records=tuple(turns),
+        )
+
     async def _arun(self, prompt: str, cwd: Path, resume: str | None) -> CoderRun:
         assert self.query_fn is not None and self.diff_fn is not None
         options = self._options(cwd, resume)
@@ -209,34 +230,53 @@ class AgentCoder:
         rate_limit_reset: str | None = None
         rate_limited = False
 
-        async for message in self.query_fn(
-            prompt=_user_stream(prompt), options=options
-        ):
-            if isinstance(message, AssistantMessage):
-                tools = tuple(
-                    b.name for b in message.content if isinstance(b, ToolUseBlock)
-                )
-                texts = [b.text for b in message.content if isinstance(b, TextBlock)]
-                if texts:
-                    final_text = texts[-1]
-                turns.append(
-                    TurnRecord(index=len(turns) + 1, tools=tools, usage=message.usage)
-                )
-                if message.session_id:
-                    session_id = message.session_id
-                if message.error == "rate_limit":
-                    rate_limited = True
-            elif isinstance(message, RateLimitEvent):
-                if message.session_id:
-                    session_id = message.session_id
-                info = message.rate_limit_info
-                if getattr(info, "status", None) == "rejected":
-                    rate_limited = True
-                    rate_limit_reset = getattr(info, "resets_at", None)
-            elif isinstance(message, ResultMessage):
-                result = message
-                if message.session_id:
-                    session_id = message.session_id
+        try:
+            async for message in self.query_fn(
+                prompt=_user_stream(prompt), options=options
+            ):
+                if isinstance(message, AssistantMessage):
+                    tools = tuple(
+                        b.name for b in message.content if isinstance(b, ToolUseBlock)
+                    )
+                    texts = [
+                        b.text for b in message.content if isinstance(b, TextBlock)
+                    ]
+                    if texts:
+                        final_text = texts[-1]
+                    turns.append(
+                        TurnRecord(
+                            index=len(turns) + 1, tools=tools, usage=message.usage
+                        )
+                    )
+                    if message.session_id:
+                        session_id = message.session_id
+                    if message.error == "rate_limit":
+                        rate_limited = True
+                elif isinstance(message, RateLimitEvent):
+                    if message.session_id:
+                        session_id = message.session_id
+                    info = message.rate_limit_info
+                    if getattr(info, "status", None) == "rejected":
+                        rate_limited = True
+                        rate_limit_reset = getattr(info, "resets_at", None)
+                elif isinstance(message, ResultMessage):
+                    result = message
+                    if message.session_id:
+                        session_id = message.session_id
+        except RateLimitError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - classify SDK-raised terminals
+            # In streaming mode the SDK *raises* on some terminal conditions
+            # rather than yielding a ResultMessage. Classify them (PRD §4a/§6.4).
+            text = str(exc).lower()
+            if "rate limit" in text or "rate_limit" in text:
+                raise RateLimitError(
+                    session_id=session_id, resets_at=rate_limit_reset
+                ) from exc
+            if "maximum number of turns" in text or "max turns" in text:
+                # A bounded budget exit — capture the partial diff, not a crash.
+                return self._budget_exit(cwd, final_text, turns, session_id)
+            raise CoderError(f"Agent SDK error: {exc}") from exc
 
         # A rate-limit cutoff is a retryable escalation, not a failure (PRD §4a):
         # surface the session so the caller can resume after the window resets.
