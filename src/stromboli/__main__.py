@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -62,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
     dash = sub.add_parser("dashboard", help="Serve the live watchtower dashboard.")
     dash.add_argument("--host", default="127.0.0.1")
     dash.add_argument("--port", type=int, default=8765)
+
+    watch = sub.add_parser(
+        "watch",
+        help="Run autonomously: poll Notion for Ready tasks and build them, "
+        "flagging each new task to Telegram.",
+    )
+    watch.add_argument(
+        "--interval", type=float, default=30.0, help="Seconds between polls."
+    )
     return parser
 
 
@@ -93,7 +103,77 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "dashboard":
         return _dashboard(args.host, args.port)
 
+    if args.command == "watch":
+        return _watch(args.interval)
+
     return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+def _watch_once(
+    notion: Any,
+    db_id: str,
+    notifier: Any,
+    seen: set[str],
+    *,
+    run: Any,
+    now: Any,
+) -> list[Any]:
+    """One poll pass: dispatch each newly-seen Ready task, flag it to Telegram.
+
+    Returns the tasks dispatched this pass. Factored out of the loop so it's
+    unit-testable. The Notion status guard prevents re-dispatch across passes;
+    ``seen`` guards against double-notifying a task that lingers as To-do.
+    """
+    dispatched: list[Any] = []
+    for task in notion.query_ready_tasks(db_id):
+        if task.page_id in seen:
+            continue
+        seen.add(task.page_id)
+        notifier.notify(
+            f"🆕 New task picked up: {task.name} ({task.page_id}) at {now()}"
+        )
+        run(task)
+        dispatched.append(task)
+    return dispatched
+
+
+def _watch(interval: float) -> int:
+    """Autonomous loop: poll Notion for Ready tasks and build them (the daemon)."""
+    import logging as _logging
+    import time
+    from datetime import datetime
+
+    from stromboli.graph import run_task
+    from stromboli.integrations.notion import NotionTaskClient
+    from stromboli.integrations.telegram import make_notifier
+    from stromboli.settings import load_settings
+
+    log = _logging.getLogger("stromboli.watch")
+    settings = load_settings()
+    notion = NotionTaskClient(settings.notion_token)
+    notifier = make_notifier(settings.telegram_bot_token, settings.telegram_chat_id)
+    seen: set[str] = set()
+
+    notifier.notify("👀 Stromboli is watching the Notion queue.")
+    log.info("Watching Notion db %s every %.0fs", settings.notion_task_db_id, interval)
+
+    def _run(task: Any) -> None:
+        run_task("", source="notion", task_id=task.page_id, settings=settings)
+
+    while True:
+        try:
+            done = _watch_once(
+                notion, settings.notion_task_db_id, notifier, seen,
+                run=_run, now=lambda: datetime.now().isoformat(timespec="seconds"),
+            )
+            if done:
+                log.info("Dispatched %d task(s).", len(done))
+        except KeyboardInterrupt:  # pragma: no cover
+            log.info("Watcher stopped.")
+            return 0
+        except Exception:  # noqa: BLE001 - a poll error must not kill the loop
+            log.exception("Poll failed; retrying next interval.")
+        time.sleep(interval)
 
 
 def _dashboard(host: str, port: int) -> int:

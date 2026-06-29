@@ -46,6 +46,42 @@ def test_poll_runs_every_ready_task(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ran == ["pg-1", "pg-2"]
 
 
+def test_watch_once_dispatches_and_notifies_new_tasks() -> None:
+    pushes: list[str] = []
+    ran: list[str] = []
+
+    class _Notion:
+        def query_ready_tasks(self, db_id: str) -> list[Any]:
+            return [make_task(page_id="pg-1"), make_task(page_id="pg-2")]
+
+    class _Notifier:
+        def notify(self, text: str) -> None:
+            pushes.append(text)
+
+    seen: set[str] = set()
+    dispatched = cli._watch_once(
+        _Notion(), "db", _Notifier(), seen,
+        run=lambda t: ran.append(t.page_id), now=lambda: "2026-06-30T08:00:00",
+    )
+    assert [t.page_id for t in dispatched] == ["pg-1", "pg-2"]
+    assert ran == ["pg-1", "pg-2"]
+    assert any("pg-1" in p and "New task" in p for p in pushes)
+
+    # A second pass with the same Ready tasks does NOT re-notify or re-dispatch.
+    ran.clear()
+    pushes.clear()
+    again = cli._watch_once(
+        _Notion(), "db", _Notifier(), seen,
+        run=lambda t: ran.append(t.page_id), now=lambda: "later",
+    )
+    assert again == [] and ran == [] and pushes == []
+
+
+def test_parser_accepts_watch() -> None:
+    args = cli.build_parser().parse_args(["watch", "--interval", "5"])
+    assert args.command == "watch" and args.interval == 5.0
+
+
 def test_poll_with_no_ready_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeNotionClient:
         def __init__(self, token: str) -> None:
