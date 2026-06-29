@@ -330,6 +330,20 @@ class NotionTaskClient:
         )
         resp.raise_for_status()
 
+    def set_rich_text(self, page_id: str, prop_name: str, text: str) -> None:
+        """Write ``text`` into a rich_text property (e.g. the ``Prompt`` field).
+
+        Notion caps a rich_text segment at 2000 chars, so the value is chunked.
+        """
+        chunks = [text[i : i + 1900] for i in range(0, len(text), 1900)] or [""]
+        rich_text = [{"type": "text", "text": {"content": c}} for c in chunks]
+        resp = self._client.patch(
+            f"/v1/pages/{page_id}",
+            headers=self._headers,
+            json={"properties": {prop_name: {"rich_text": rich_text}}},
+        )
+        resp.raise_for_status()
+
     def append_task_body(self, page_id: str, markdown: str) -> None:
         """Append markdown to the task page body as paragraph blocks."""
         children = _markdown_to_blocks(markdown)

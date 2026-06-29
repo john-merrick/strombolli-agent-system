@@ -30,7 +30,29 @@ WorktreeFor = Callable[[StromboliState], Worktree]
 
 
 def _build_prompt(state: StromboliState) -> str:
-    """Render the spec (plus any reviewer feedback) into the coder's prompt."""
+    """Render the coder's prompt.
+
+    Prefers the prompt-agent's output (``state.plan``, also written to Notion for
+    traceability); falls back to the spec directly when no prompt was generated.
+    Reviewer feedback is appended on a revise pass either way.
+    """
+    parts: list[str] = []
+    if state.plan:
+        parts.append(state.plan)
+    else:
+        parts.append(_spec_prompt(state))
+
+    if state.verdict is not None and state.verdict.decision == "revise":
+        parts.append(f"# Reviewer feedback (address this)\n{state.verdict.reason}")
+    parts.append(
+        "Implement the change in this repository and make the tests pass. Run the "
+        "tests yourself to verify before finishing."
+    )
+    return "\n\n".join(parts)
+
+
+def _spec_prompt(state: StromboliState) -> str:
+    """Render the spec into a prompt (fallback when no generated prompt exists)."""
     spec = state.spec
     parts: list[str] = []
     if spec is not None:
@@ -51,15 +73,6 @@ def _build_prompt(state: StromboliState) -> str:
             )
     else:
         parts.append(state.raw_request)
-
-    # On a revise pass, inject the verifier's reason (the outer recursion, §6.5).
-    if state.verdict is not None and state.verdict.decision == "revise":
-        parts.append(f"# Reviewer feedback (address this)\n{state.verdict.reason}")
-
-    parts.append(
-        "Implement the change in this repository and make the tests pass. Run the "
-        "tests yourself to verify before finishing."
-    )
     return "\n\n".join(parts)
 
 

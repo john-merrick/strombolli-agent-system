@@ -28,6 +28,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from stromboli.config import (
     DEFAULT_AUTH_MODE,
     DEFAULT_CODER_MODEL,
+    DEFAULT_PROMPT_MODEL,
     DEFAULT_REASONING_MODEL,
     DEFAULT_VERIFIER_MODEL,
     AuthMode,
@@ -96,6 +97,8 @@ class Settings(BaseSettings):
     reasoning_model: str = Field(
         default=DEFAULT_REASONING_MODEL, alias="REASONING_MODEL"
     )
+    #: Lightweight model for the prompt agent (Spec → coding prompt).
+    prompt_model: str = Field(default=DEFAULT_PROMPT_MODEL, alias="PROMPT_MODEL")
     #: The non-Claude verifier model (PRD §11.1, pinned to Gemini 2.5 Pro).
     verifier_model: str = Field(default=DEFAULT_VERIFIER_MODEL, alias="VERIFIER_MODEL")
 

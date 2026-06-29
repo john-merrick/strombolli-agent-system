@@ -14,6 +14,7 @@ from stromboli.nodes.human import make_human
 from stromboli.nodes.intake import Node, make_intake
 from stromboli.nodes.memory import make_memory_write
 from stromboli.nodes.pr import make_pr
+from stromboli.nodes.prompt import make_prompt
 from stromboli.nodes.router import (
     make_route_after_verdict,
     route_after_coding,
@@ -29,6 +30,7 @@ __all__ = [
     "make_intake",
     "make_memory_write",
     "make_pr",
+    "make_prompt",
     "make_route_after_verdict",
     "make_spec",
     "make_verifier",

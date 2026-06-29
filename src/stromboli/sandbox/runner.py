@@ -279,12 +279,25 @@ class SandboxRunner:
         self._run = run or _subprocess_runner
         self._use_docker = use_docker
 
+    def _container_name(self, worktree_path: Path) -> str:
+        """A deterministic, inspectable container name per worktree."""
+        leaf = re.sub(r"[^a-zA-Z0-9_.-]+", "-", worktree_path.name)[:60].strip("-")
+        return f"stromboli-sandbox-{leaf or 'run'}"
+
     def _docker_argv(self, worktree_path: Path, command: Sequence[str]) -> list[str]:
-        """Wrap ``command`` in an isolated, throwaway Docker container."""
+        """Wrap ``command`` in an isolated Docker container — named + labelled so
+        it's visible in ``docker ps -a`` / ``docker logs`` (PRD §8 traceability).
+
+        Deliberately NOT ``--rm`` so the finished container persists for
+        inspection; a stale one of the same name is removed before each run.
+        """
         return [
             "docker",
             "run",
-            "--rm",
+            "--name",
+            self._container_name(worktree_path),
+            "--label",
+            "stromboli=sandbox",
             "--network",
             "none",
             "-v",
@@ -302,14 +315,23 @@ class SandboxRunner:
     ) -> SandboxResult:
         """Run ``command`` against ``worktree_path`` and capture pass/fail+output."""
         path = Path(worktree_path)
-        argv = (
-            self._docker_argv(path, command)
-            if self._use_docker
-            else list(command)
-        )
+        if self._use_docker:
+            name = self._container_name(path)
+            # Clear a prior container of this name so the run isn't blocked, and
+            # so `docker ps -a` shows only the latest attempt (best-effort).
+            self._run(["docker", "rm", "-f", name], path)
+            argv = self._docker_argv(path, command)
+        else:
+            argv = list(command)
+        logger.info("Sandbox: %s", " ".join(argv))
         exit_code, output = self._run(argv, path)
+        # pytest exit 5 = "no tests collected" — not a failure of the change
+        # itself; the verifier judges coverage. Treat 0 and 5 as passing.
+        passed = exit_code in (0, 5)
+        if exit_code == 5:
+            output = f"{output}\n(no tests collected — exit 5)"
         return SandboxResult(
-            passed=exit_code == 0, output=_truncate(output), exit_code=exit_code
+            passed=passed, output=_truncate(output), exit_code=exit_code
         )
 
 

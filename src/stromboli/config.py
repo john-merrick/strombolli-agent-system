@@ -35,6 +35,8 @@ DEFAULT_AUTH_MODE: AuthMode = "subscription"
 DEFAULT_CODER_MODEL = "claude-opus-4-8"
 #: The default cheap reasoning model for spec/router/memory (Haiku-class, PRD §4).
 DEFAULT_REASONING_MODEL = "claude-haiku-4-5-20251001"
+#: The default lightweight model for the prompt agent (Spec → coding prompt).
+DEFAULT_PROMPT_MODEL = "gemini-3.5-flash"
 #: The default verifier model — deliberately *non-Claude* (PRD §11.1, resolved).
 DEFAULT_VERIFIER_MODEL = "gemini/gemini-2.5-pro"
 
@@ -73,6 +75,8 @@ class Models:
     coder: str = DEFAULT_CODER_MODEL
     #: Spec / router / memory — cheap, via the LiteLLM gateway.
     reasoning: str = DEFAULT_REASONING_MODEL
+    #: The prompt agent (Spec → coding prompt) — lightweight, via the gateway.
+    prompt: str = DEFAULT_PROMPT_MODEL
     #: The verifier — non-Claude, via the LiteLLM gateway (independent judgment).
     verifier: str = DEFAULT_VERIFIER_MODEL
 
@@ -98,6 +102,7 @@ def from_settings(settings: Settings) -> Config:
         models=Models(
             coder=settings.coder_model,
             reasoning=settings.reasoning_model,
+            prompt=settings.prompt_model,
             verifier=settings.verifier_model,
         ),
         auth_mode=settings.coder_auth_mode,
@@ -107,6 +112,7 @@ def from_settings(settings: Settings) -> Config:
 __all__ = [
     "DEFAULT_AUTH_MODE",
     "DEFAULT_CODER_MODEL",
+    "DEFAULT_PROMPT_MODEL",
     "DEFAULT_REASONING_MODEL",
     "DEFAULT_VERIFIER_MODEL",
     "AuthMode",

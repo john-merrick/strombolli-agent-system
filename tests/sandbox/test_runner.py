@@ -32,20 +32,23 @@ def test_clone_url_embeds_token() -> None:
 
 
 def test_sandbox_run_passes() -> None:
-    seen: dict[str, object] = {}
+    calls: list[list[str]] = []
 
     def fake_run(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
-        seen["argv"] = list(argv)
+        calls.append(list(argv))
         return 0, "1 passed"
 
     runner = SandboxRunner(run=fake_run, use_docker=True)
     result = runner.run_tests("/tmp/wt", ("pytest", "-q"))
     assert result.passed is True
     assert result.exit_code == 0
-    # The command is wrapped in an isolated docker container.
-    argv = seen["argv"]
-    assert isinstance(argv, list)
-    assert argv[:3] == ["docker", "run", "--rm"]
+    # A stale container is cleared first, then a named/labelled (visible) run.
+    assert calls[0][:3] == ["docker", "rm", "-f"]
+    argv = calls[-1]
+    assert argv[:2] == ["docker", "run"]
+    assert "--name" in argv and "--label" in argv
+    assert "--rm" not in argv  # kept for inspection (docker ps -a)
+    assert "none" in argv  # --network none
     assert DEFAULT_SANDBOX_IMAGE in argv
     assert "pytest" in argv
 
@@ -62,6 +65,15 @@ def test_sandbox_run_fails_and_truncates() -> None:
     assert result.exit_code == 1
     assert "truncated" in result.output
     assert len(result.output) < len(big)
+
+
+def test_no_tests_collected_is_not_a_failure() -> None:
+    # pytest exit 5 = no tests collected → not a failure of the change itself.
+    runner = SandboxRunner(run=lambda _a, _c: (5, ""), use_docker=False)
+    result = runner.run_tests("/tmp/wt")
+    assert result.passed is True
+    assert result.exit_code == 5
+    assert "no tests collected" in result.output
 
 
 def test_sandbox_no_docker_runs_command_directly() -> None:

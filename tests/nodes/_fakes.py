@@ -36,6 +36,12 @@ class FakeGateway:
             raise self._error
         return schema.model_validate(self._payload)
 
+    def complete(self, *, model: str, system: str, user: str) -> str:
+        self.calls.append({"model": model, "system": system, "user": user})
+        if self._error is not None:
+            raise self._error
+        return "generated coding prompt"
+
 
 def make_task(page_id: str = "page-1", *, spec: str = "build X",
               name: str = "Task") -> Task:
@@ -61,6 +67,10 @@ class RoutingGateway:
         self.calls.append((schema.__name__, model))
         return schema.model_validate(self._payloads[schema.__name__])
 
+    def complete(self, *, model: str, system: str, user: str) -> str:
+        self.calls.append(("complete", model))
+        return "generated coding prompt"
+
 
 class FakeNotion:
     """A Notion surface fake: serves one task and records appended notes."""
@@ -70,6 +80,7 @@ class FakeNotion:
         self.appended: list[tuple[str, str]] = []
         self.status_writes: list[tuple[str, str | None]] = []
         self.pr_writes: list[tuple[str, str | None]] = []
+        self.rich_text_writes: list[tuple[str, str, str]] = []
 
     def get_task(self, page_id: str) -> Task:
         return self._task
@@ -79,6 +90,9 @@ class FakeNotion:
 
     def append_task_body(self, page_id: str, markdown: str) -> None:
         self.appended.append((page_id, markdown))
+
+    def set_rich_text(self, page_id: str, prop_name: str, text: str) -> None:
+        self.rich_text_writes.append((page_id, prop_name, text))
 
     def update_task(
         self,

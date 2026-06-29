@@ -17,16 +17,21 @@ CODING = "coding"
 HUMAN = "human"
 PR = "pr"
 VERIFIER = "verifier"
+PROMPT = "prompt"
 
 #: A routing function: state → next node name.
 RouteFn = Callable[[StromboliState], str]
 
 
 def route_after_spec(state: StromboliState) -> str:
-    """Router (§6.3): ambiguous spec → Human Interrupt, else → Coding."""
+    """Router (§6.3): ambiguous spec → Human Interrupt, else → the Prompt node.
+
+    A ready spec goes to the prompt agent (Spec→Prompt→Coding); only the build
+    path generates a prompt, so ambiguous specs skip it.
+    """
     if state.spec is not None and state.spec.ambiguous:
         return HUMAN
-    return CODING
+    return PROMPT
 
 
 def route_after_coding(state: StromboliState) -> str:
@@ -68,6 +73,7 @@ __all__ = [
     "CODING",
     "HUMAN",
     "PR",
+    "PROMPT",
     "VERIFIER",
     "RouteFn",
     "make_route_after_verdict",

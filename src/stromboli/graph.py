@@ -21,12 +21,14 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from stromboli.config import (
+    DEFAULT_PROMPT_MODEL,
     DEFAULT_REASONING_MODEL,
     DEFAULT_VERIFIER_MODEL,
     Budgets,
@@ -49,6 +51,7 @@ from stromboli.nodes import (
     make_intake,
     make_memory_write,
     make_pr,
+    make_prompt,
     make_route_after_verdict,
     make_spec,
     make_verifier,
@@ -56,7 +59,15 @@ from stromboli.nodes import (
 )
 from stromboli.nodes.coding import WorktreeFor
 from stromboli.nodes.intake import NotionReader
-from stromboli.nodes.router import CODING, HUMAN, PR, VERIFIER, route_after_spec
+from stromboli.nodes.router import (
+    CODING,
+    HUMAN,
+    PR,
+    PROMPT,
+    VERIFIER,
+    route_after_spec,
+)
+from stromboli.observability.runtrace import FileRunTrace, RunTrace
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import TestSandbox, Worktree
 from stromboli.settings import Settings, load_settings
@@ -66,9 +77,11 @@ logger = logging.getLogger(__name__)
 
 
 class NotionGateway(NotionReader, AppendGateway, Protocol):
-    """The combined Notion surface the graph needs (read, append, set status)."""
+    """The combined Notion surface the graph needs (read, append, status, prompt)."""
 
     def update_task(self, page_id: str, *, status: str | None = ...) -> None: ...
+
+    def set_rich_text(self, page_id: str, prop_name: str, text: str) -> None: ...
 
 
 @dataclass
@@ -85,6 +98,7 @@ class GraphDeps:
     tracer: BuildTracer = field(default_factory=NullTracer)
     gateway: Gateway | None = None
     reasoning_model: str = DEFAULT_REASONING_MODEL
+    prompt_model: str = DEFAULT_PROMPT_MODEL
     verifier_model: str = DEFAULT_VERIFIER_MODEL
     notion: NotionGateway | None = None
     notifier: Notifier = field(default_factory=NullNotifier)
@@ -95,6 +109,8 @@ class GraphDeps:
     worktree_for: WorktreeFor | None = None
     #: The three-tier memory (Phase 4): seeds Spec, learns on completion.
     memory: Memory | None = None
+    #: Where per-run trace files are written (None → no local trace file).
+    workspace_root: Path | None = None
     #: GitHub gateway for the live PR node (Phase 6).
     github: GitHubGateway | None = None
     #: Git runner seam for the PR node (``None`` → real git); injected in tests.
@@ -104,8 +120,10 @@ class GraphDeps:
     dry_run_pr: bool = True
 
 
-def _traced(tracer: BuildTracer, name: str, node: Node) -> Any:
-    """Wrap a node so it emits a Langfuse span on each invocation (PRD §8).
+def _traced(
+    tracer: BuildTracer, name: str, node: Node, run_trace: RunTrace
+) -> Any:
+    """Wrap a node so it emits a Langfuse span + a local run-trace record (§8).
 
     Returns ``Any`` because LangGraph's overloaded ``add_node`` cannot infer its
     node-input type var from an alias-typed ``Callable`` value (only from a
@@ -114,65 +132,85 @@ def _traced(tracer: BuildTracer, name: str, node: Node) -> Any:
 
     def wrapped(state: StromboliState) -> dict[str, object]:
         with traced_node(tracer, name, metadata={"task_id": state.task_id}):
-            return node(state)
+            out = node(state)
+        run_trace.record(name, out)
+        return out
 
     return wrapped
 
 
-def _untraced(node: Node) -> Any:
-    """Pass a self-tracing node to ``add_node`` (returns ``Any``, see _traced)."""
-    return node
+def _recorded(node: Node, name: str, run_trace: RunTrace) -> Any:
+    """Wrap a self-tracing node (coding) to also write the local run-trace."""
+
+    def wrapped(state: StromboliState) -> dict[str, object]:
+        out = node(state)
+        run_trace.record(name, out)
+        return out
+
+    return wrapped
 
 
-def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
+def build_graph(
+    deps: GraphDeps,
+    *,
+    checkpointer: Any | None = None,
+    run_trace: RunTrace | None = None,
+) -> Any:
     """Assemble and compile the StateGraph from ``deps``.
 
     Edges (PRD §3):
         START → intake → spec
-        spec  ─(router §6.3)→ coding | human
-        coding → verifier
+        spec  ─(router §6.3)→ prompt | human
+        prompt → coding
+        coding ─→ verifier | human (rate-limit escalation, §4a)
         verifier ─(verdict gate §6.6)→ pr | coding | human
         pr → memory → END
         human → END
     """
+    trace = run_trace or RunTrace()
     builder = StateGraph(StromboliState)
 
-    builder.add_node(
-        "intake", _traced(deps.tracer, "intake", make_intake(notion=deps.notion))
-    )
+    def traced(name: str, node: Node) -> Any:
+        return _traced(deps.tracer, name, node, trace)
+
+    builder.add_node("intake", traced("intake", make_intake(notion=deps.notion)))
     retriever = deps.memory.recall_for_spec if deps.memory is not None else None
     builder.add_node(
         "spec",
-        _traced(
-            deps.tracer,
+        traced(
             "spec",
             make_spec(deps.gateway, model=deps.reasoning_model, retriever=retriever),
         ),
     )
-    # The coding node self-traces (it nests the SDK turns as child spans, §8).
+    builder.add_node(
+        "prompt",
+        traced(
+            "prompt",
+            make_prompt(deps.gateway, model=deps.prompt_model, notion=deps.notion),
+        ),
+    )
+    # The coding node self-traces its SDK turns as Langfuse child spans (§8); we
+    # still record its output to the local run-trace.
     builder.add_node(
         "coding",
-        _untraced(
+        _recorded(
             make_coding(
                 deps.coder,
                 deps.sandbox,
                 deps.worktree_for,
                 tracer=deps.tracer,
-            )
+            ),
+            "coding",
+            trace,
         ),
     )
     builder.add_node(
         "verifier",
-        _traced(
-            deps.tracer,
-            "verifier",
-            make_verifier(deps.gateway, model=deps.verifier_model),
-        ),
+        traced("verifier", make_verifier(deps.gateway, model=deps.verifier_model)),
     )
     builder.add_node(
         "pr",
-        _traced(
-            deps.tracer,
+        traced(
             "pr",
             make_pr(
                 github=deps.github,
@@ -185,22 +223,17 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
         ),
     )
     builder.add_node(
-        "human",
-        _traced(
-            deps.tracer,
-            "human",
-            make_human(notifier=deps.notifier, notion=deps.notion),
-        ),
+        "human", traced("human", make_human(notifier=deps.notifier, notion=deps.notion))
     )
-    builder.add_node(
-        "memory", _traced(deps.tracer, "memory", make_memory_write(deps.memory))
-    )
+    builder.add_node("memory", traced("memory", make_memory_write(deps.memory)))
 
     builder.add_edge(START, "intake")
     builder.add_edge("intake", "spec")
+    # Ready spec → prompt agent → coding; ambiguous spec → human (skips prompt).
     builder.add_conditional_edges(
-        "spec", route_after_spec, {CODING: "coding", HUMAN: "human"}
+        "spec", route_after_spec, {PROMPT: "prompt", HUMAN: "human"}
     )
+    builder.add_edge("prompt", "coding")
     # A rate-limit cutoff escalates to the human interrupt (PRD §4a); otherwise
     # coding proceeds to verification.
     builder.add_conditional_edges(
@@ -261,7 +294,16 @@ def _execute(
     checkpointer: Any | None,
 ) -> StromboliState:
     """Compile + invoke the graph for one task, trace it, and finalize."""
-    graph = build_graph(deps, checkpointer=checkpointer or MemorySaver())
+    run_trace: RunTrace = (
+        FileRunTrace(deps.workspace_root, task_id)
+        if deps.workspace_root is not None
+        else RunTrace()
+    )
+    if isinstance(run_trace, FileRunTrace):
+        logger.info("Run trace: %s", run_trace.directory)
+    graph = build_graph(
+        deps, checkpointer=checkpointer or MemorySaver(), run_trace=run_trace
+    )
     initial = StromboliState(task_id=task_id, source=source, raw_request=raw_request)
 
     deps.tracer.start(task_id=task_id, name=raw_request[:60] or "task")
@@ -358,10 +400,12 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         tracer=tracer,
         gateway=gateway,
         reasoning_model=config.models.reasoning,
+        prompt_model=config.models.prompt,
         verifier_model=config.models.verifier,
         notion=notion,
         notifier=notifier,
         memory=memory,
+        workspace_root=settings.workspace_root,
         coder=coder,
         sandbox=SandboxRunner(),
         github=GitHubClient(settings.github_token),

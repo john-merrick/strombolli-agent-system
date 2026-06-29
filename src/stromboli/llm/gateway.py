@@ -33,6 +33,8 @@ class Gateway(Protocol):
         self, *, model: str, system: str, user: str, schema: type[T]
     ) -> T: ...
 
+    def complete(self, *, model: str, system: str, user: str) -> str: ...
+
 
 def _extract_content(response: Any) -> str:
     """Pull the assistant message text out of a litellm/OpenAI-shaped response."""
@@ -159,6 +161,26 @@ class LiteLLMGateway:
 
         content = _extract_content(response)
         return schema.model_validate(_coerce_json(content))
+
+    def complete(self, *, model: str, system: str, user: str) -> str:
+        """Run one plain-text completion (no JSON coercion) and return the text."""
+        assert self.completion is not None  # set in __post_init__
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            response = self.completion(
+                model=self._route(model),
+                messages=messages,
+                api_base=self.base_url,
+                api_key=self.api_key,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - surface as a typed gateway error
+            raise GatewayError(f"Gateway completion failed: {exc}") from exc
+        return _extract_content(response).strip()
 
 
 def build_gateway(*, base_url: str, api_key: str) -> LiteLLMGateway:

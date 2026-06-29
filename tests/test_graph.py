@@ -44,12 +44,13 @@ def test_router_ambiguous_goes_to_human() -> None:
     assert route_after_spec(state) == "human"
 
 
-def test_router_ready_goes_to_coding() -> None:
+def test_router_ready_goes_to_prompt() -> None:
     state = StromboliState(
         task_id="t", source="cli", raw_request="clear",
         spec=Spec(goal="do x", ambiguous=False),
     )
-    assert route_after_spec(state) == "coding"
+    # Ready spec → prompt agent (Spec→Prompt→Coding).
+    assert route_after_spec(state) == "prompt"
 
 
 def test_verdict_gate_pass_to_pr() -> None:
@@ -103,5 +104,6 @@ def test_build_graph_is_compilable() -> None:
     graph = build_graph(_offline_deps(), checkpointer=MemorySaver())
     # The compiled graph exposes the canonical node set.
     nodes = set(graph.get_graph().nodes)
-    for name in ("intake", "spec", "coding", "verifier", "pr", "human", "memory"):
+    for name in ("intake", "spec", "prompt", "coding", "verifier", "pr", "human",
+                 "memory"):
         assert name in nodes
