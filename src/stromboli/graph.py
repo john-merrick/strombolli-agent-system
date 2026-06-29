@@ -34,6 +34,7 @@ from stromboli.integrations.notion import AppendGateway
 from stromboli.integrations.telegram import Notifier, NullNotifier
 from stromboli.llm.coder import Coder
 from stromboli.llm.gateway import Gateway
+from stromboli.memory import Memory
 from stromboli.nodes import (
     Node,
     make_coding,
@@ -82,6 +83,8 @@ class GraphDeps:
     coder: Coder | None = None
     sandbox: TestSandbox | None = None
     worktree_for: WorktreeFor | None = None
+    #: The three-tier memory (Phase 4): seeds Spec, learns on completion.
+    memory: Memory | None = None
     #: PR node opens no real PR while true (Phase 0/1 default; live in Phase 6).
     dry_run_pr: bool = True
 
@@ -122,12 +125,13 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
     builder.add_node(
         "intake", _traced(deps.tracer, "intake", make_intake(notion=deps.notion))
     )
+    retriever = deps.memory.recall_for_spec if deps.memory is not None else None
     builder.add_node(
         "spec",
         _traced(
             deps.tracer,
             "spec",
-            make_spec(deps.gateway, model=deps.reasoning_model),
+            make_spec(deps.gateway, model=deps.reasoning_model, retriever=retriever),
         ),
     )
     # The coding node self-traces (it nests the SDK turns as child spans, §8).
@@ -162,7 +166,7 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
         ),
     )
     builder.add_node(
-        "memory", _traced(deps.tracer, "memory", make_memory_write())
+        "memory", _traced(deps.tracer, "memory", make_memory_write(deps.memory))
     )
 
     builder.add_edge(START, "intake")
@@ -244,6 +248,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     )
     notion = NotionTaskClient(settings.notion_token)
     notifier = make_notifier(settings.telegram_bot_token, settings.telegram_chat_id)
+    memory = Memory.open(settings.chroma_persist_dir)
     return GraphDeps(
         budgets=config.budgets,
         tracer=tracer,
@@ -252,6 +257,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         verifier_model=config.models.verifier,
         notion=notion,
         notifier=notifier,
+        memory=memory,
     )
 
 
