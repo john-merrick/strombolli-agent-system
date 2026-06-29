@@ -1,30 +1,45 @@
 """Intake node (PRD §6.1) — normalize a source payload into initial state.
 
-For the ``cli`` source the state is already well-formed (the CLI builds it), so
-intake is a pass-through that stamps ``status``. For ``notion`` it will hydrate
-``raw_request`` from the task page (wired in Phase 1 / §6). Output: a well-formed
-initial state with ``status="intake"``.
+For ``cli`` / ``telegram`` the state is already well-formed (the caller built it),
+so intake stamps ``status``. For ``notion`` — the front-end for adding tasks —
+it hydrates ``raw_request`` from the task page (the task's Spec, falling back to
+its name) given a Notion reader. Output: a well-formed initial state.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
+from typing import Protocol
 
+from stromboli.integrations.notion import Task
 from stromboli.state import StromboliState
+
+logger = logging.getLogger(__name__)
 
 #: A LangGraph node: maps the current state to a partial-state update.
 Node = Callable[[StromboliState], dict[str, object]]
 
 
-def make_intake() -> Node:
-    """Build the intake node."""
+class NotionReader(Protocol):
+    """The slice of the Notion client intake needs (read one task page)."""
+
+    def get_task(self, page_id: str) -> Task: ...
+
+
+def make_intake(notion: NotionReader | None = None) -> Node:
+    """Build the intake node. ``notion`` enables hydrating a Notion task."""
 
     def intake(state: StromboliState) -> dict[str, object]:
-        # The CLI already populated task_id / source / raw_request; ensure the
-        # status reflects that intake ran. Notion hydration arrives in Phase 1.
+        if state.source == "notion" and notion is not None:
+            task = notion.get_task(state.task_id)
+            raw = task.spec.strip() or task.name
+            logger.info("Hydrated Notion task %s for intake.", state.task_id)
+            return {"raw_request": raw, "status": "intake"}
+        # CLI / telegram already populated raw_request.
         return {"status": "intake"}
 
     return intake
 
 
-__all__ = ["Node", "make_intake"]
+__all__ = ["Node", "NotionReader", "make_intake"]

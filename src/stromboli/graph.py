@@ -19,12 +19,20 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from stromboli.config import Budgets, from_settings
+from stromboli.config import (
+    DEFAULT_REASONING_MODEL,
+    DEFAULT_VERIFIER_MODEL,
+    Budgets,
+    from_settings,
+)
+from stromboli.integrations.notion import AppendGateway
+from stromboli.integrations.telegram import Notifier, NullNotifier
+from stromboli.llm.gateway import Gateway
 from stromboli.nodes import (
     Node,
     make_coding,
@@ -36,6 +44,7 @@ from stromboli.nodes import (
     make_spec,
     make_verifier,
 )
+from stromboli.nodes.intake import NotionReader
 from stromboli.nodes.router import CODING, HUMAN, PR, route_after_spec
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.settings import Settings, load_settings
@@ -44,17 +53,27 @@ from stromboli.state import Source, StromboliState
 logger = logging.getLogger(__name__)
 
 
+class NotionGateway(NotionReader, AppendGateway, Protocol):
+    """The combined Notion surface the graph needs (read a task + append back)."""
+
+
 @dataclass
 class GraphDeps:
     """The collaborators the graph injects into its nodes.
 
-    Phase 0 needs only budgets + tracer (the nodes are stubs). Later phases add
-    the LLM gateway, the coder, the sandbox, and the integrations as fields here
-    without changing the graph's shape.
+    Phase 0 needed only budgets + tracer (stub nodes). Phase 1 adds the LiteLLM
+    gateway (spec), the Notion surface (intake + escalation write-back), and the
+    Telegram notifier (escalations). The coder + sandbox (Phase 2) and memory
+    (Phase 4) slot in here without changing the graph's shape.
     """
 
     budgets: Budgets = field(default_factory=Budgets)
     tracer: BuildTracer = field(default_factory=NullTracer)
+    gateway: Gateway | None = None
+    reasoning_model: str = DEFAULT_REASONING_MODEL
+    verifier_model: str = DEFAULT_VERIFIER_MODEL
+    notion: NotionGateway | None = None
+    notifier: Notifier = field(default_factory=NullNotifier)
     #: PR node opens no real PR while true (Phase 0/1 default; live in Phase 6).
     dry_run_pr: bool = True
 
@@ -87,14 +106,30 @@ def build_graph(deps: GraphDeps, *, checkpointer: Any | None = None) -> Any:
     """
     builder = StateGraph(StromboliState)
 
-    builder.add_node("intake", _traced(deps.tracer, "intake", make_intake()))
-    builder.add_node("spec", _traced(deps.tracer, "spec", make_spec()))
+    builder.add_node(
+        "intake", _traced(deps.tracer, "intake", make_intake(notion=deps.notion))
+    )
+    builder.add_node(
+        "spec",
+        _traced(
+            deps.tracer,
+            "spec",
+            make_spec(deps.gateway, model=deps.reasoning_model),
+        ),
+    )
     builder.add_node("coding", _traced(deps.tracer, "coding", make_coding()))
     builder.add_node("verifier", _traced(deps.tracer, "verifier", make_verifier()))
     builder.add_node(
         "pr", _traced(deps.tracer, "pr", make_pr(dry_run=deps.dry_run_pr))
     )
-    builder.add_node("human", _traced(deps.tracer, "human", make_human()))
+    builder.add_node(
+        "human",
+        _traced(
+            deps.tracer,
+            "human",
+            make_human(notifier=deps.notifier, notion=deps.notion),
+        ),
+    )
     builder.add_node(
         "memory", _traced(deps.tracer, "memory", make_memory_write())
     )
@@ -136,16 +171,7 @@ def run_task(
     resolved_id = task_id or uuid.uuid4().hex
 
     if deps is None:
-        settings = settings or load_settings()
-        config = from_settings(settings)
-        from stromboli.observability.tracing import build_tracer
-
-        tracer = build_tracer(
-            public_key=settings.langfuse_public_key,
-            secret_key=settings.langfuse_secret_key,
-            host=settings.langfuse_host,
-        )
-        deps = GraphDeps(budgets=config.budgets, tracer=tracer)
+        deps = _deps_from_settings(settings or load_settings())
 
     graph = build_graph(deps, checkpointer=checkpointer or MemorySaver())
     initial = StromboliState(
@@ -167,6 +193,35 @@ def run_task(
         deps.tracer.finish(error=error)
 
     return StromboliState.model_validate(result)
+
+
+def _deps_from_settings(settings: Settings) -> GraphDeps:
+    """Assemble the production dependency graph from env-backed settings."""
+    from stromboli.integrations.notion import NotionTaskClient
+    from stromboli.integrations.telegram import make_notifier
+    from stromboli.llm.gateway import build_gateway
+    from stromboli.observability.tracing import build_tracer
+
+    config = from_settings(settings)
+    tracer = build_tracer(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        host=settings.langfuse_host,
+    )
+    gateway = build_gateway(
+        base_url=settings.litellm_base_url, api_key=settings.litellm_api_key
+    )
+    notion = NotionTaskClient(settings.notion_token)
+    notifier = make_notifier(settings.telegram_bot_token, settings.telegram_chat_id)
+    return GraphDeps(
+        budgets=config.budgets,
+        tracer=tracer,
+        gateway=gateway,
+        reasoning_model=config.models.reasoning,
+        verifier_model=config.models.verifier,
+        notion=notion,
+        notifier=notifier,
+    )
 
 
 def _terminal_tag(result: Any | None) -> str:
