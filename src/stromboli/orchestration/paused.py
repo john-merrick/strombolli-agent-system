@@ -17,6 +17,7 @@ phases, so persisting the state model is the resume mechanism (design DL-2).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +41,10 @@ class PausedTask:
     worktree_path: str | None = None
     session_id: str | None = None
     chat_id: str | None = None
+    #: The guidance the investigator proposed and the human has yet to apply.
+    guidance: str | None = None
+    #: Human-readable task name (for the opener / `/queued` listing).
+    name: str = ""
 
 
 class PausedIndex:
@@ -68,10 +73,17 @@ class PausedIndex:
                     worktree_path TEXT,
                     session_id    TEXT,
                     chat_id       TEXT,
+                    name          TEXT NOT NULL DEFAULT '',
+                    guidance      TEXT,
                     transcript    TEXT NOT NULL DEFAULT '[]',
                     state_json    TEXT NOT NULL
                 )
                 """
+            )
+            # Key/value side table — the persisted Telegram long-poll offset, so a
+            # service restart neither reprocesses nor drops messages.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"
             )
 
     # -- writes -------------------------------------------------------------- #
@@ -80,6 +92,7 @@ class PausedIndex:
         state: StromboliState,
         *,
         reason: str,
+        name: str = "",
         worktree_path: str | None = None,
         paused_at: str | None = None,
     ) -> PausedTask:
@@ -99,8 +112,8 @@ class PausedIndex:
                 """
                 INSERT INTO paused
                     (task_id, ref, reason, paused_at, state,
-                     worktree_path, session_id, state_json)
-                VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
+                     worktree_path, session_id, name, state_json)
+                VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     ref           = excluded.ref,
                     reason        = excluded.reason,
@@ -108,16 +121,18 @@ class PausedIndex:
                     state         = 'open',
                     worktree_path = excluded.worktree_path,
                     session_id    = excluded.session_id,
+                    name          = excluded.name,
                     state_json    = excluded.state_json
                 """,
                 (
                     state.task_id, ref, reason, when,
-                    worktree_path, state.session_id, state.model_dump_json(),
+                    worktree_path, state.session_id, name, state.model_dump_json(),
                 ),
             )
         return PausedTask(
             task_id=state.task_id, ref=ref, reason=reason, paused_at=when,
             state="open", worktree_path=worktree_path, session_id=state.session_id,
+            name=name,
         )
 
     def resolve(self, task_id: str, *, state: PausedState) -> None:
@@ -125,6 +140,51 @@ class PausedIndex:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE paused SET state = ? WHERE task_id = ?", (state, task_id)
+            )
+
+    # -- conversation transcript + proposed guidance ----------------------- #
+    def append_message(self, task_id: str, role: str, content: str) -> None:
+        """Append one ``{role, content}`` turn to the task's stored transcript."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT transcript FROM paused WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            history = json.loads(row["transcript"]) if row else []
+            history.append({"role": role, "content": content})
+            conn.execute(
+                "UPDATE paused SET transcript = ? WHERE task_id = ?",
+                (json.dumps(history), task_id),
+            )
+
+    def transcript(self, task_id: str) -> list[dict[str, str]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT transcript FROM paused WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        return list(json.loads(row["transcript"])) if row else []
+
+    def set_guidance(self, task_id: str, guidance: str) -> None:
+        """Stash the investigator's proposed guidance, applied on the human's ✅."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE paused SET guidance = ? WHERE task_id = ?",
+                (guidance, task_id),
+            )
+
+    # -- persisted Telegram long-poll offset ------------------------------- #
+    def get_offset(self) -> int | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'offset'"
+            ).fetchone()
+        return int(row["value"]) if row else None
+
+    def set_offset(self, offset: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('offset', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(offset),),
             )
 
     def _next_ref(self, conn: sqlite3.Connection) -> int:
@@ -184,7 +244,7 @@ def _row_to_task(row: sqlite3.Row) -> PausedTask:
         task_id=row["task_id"], ref=row["ref"], reason=row["reason"],
         paused_at=row["paused_at"], state=row["state"],
         worktree_path=row["worktree_path"], session_id=row["session_id"],
-        chat_id=row["chat_id"],
+        chat_id=row["chat_id"], guidance=row["guidance"], name=row["name"],
     )
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,14 @@ logger = logging.getLogger(__name__)
 Sender = Callable[[str], None]
 #: Posts ``payload`` to ``url`` (the Telegram Bot API); injected for tests.
 TelegramPoster = Callable[[str, dict[str, str]], None]
+#: Fetches Telegram updates since an offset (long-poll); injected for tests.
+TelegramFetcher = Callable[[int | None], list["Update"]]
 
 #: Timeout, in seconds, for a Telegram API call.
 TELEGRAM_TIMEOUT = 10.0
+#: Long-poll hold time (seconds) for getUpdates — the server holds the request
+#: open until a message arrives or this elapses, so the receiver isn't a busy loop.
+TELEGRAM_LONG_POLL = 25
 
 
 def _httpx_post(url: str, payload: dict[str, str]) -> None:
@@ -32,6 +38,60 @@ def _httpx_post(url: str, payload: dict[str, str]) -> None:
 
     response = httpx.post(url, json=payload, timeout=TELEGRAM_TIMEOUT)
     response.raise_for_status()
+
+
+@dataclass(frozen=True)
+class Update:
+    """One inbound Telegram message (the slice the investigate loop needs)."""
+
+    update_id: int
+    chat_id: str
+    text: str
+
+
+def parse_updates(payload: dict[str, Any]) -> list[Update]:
+    """Extract text messages from a getUpdates response (skips non-text updates)."""
+    updates: list[Update] = []
+    for item in payload.get("result", []):
+        message = item.get("message") or item.get("edited_message") or {}
+        chat = message.get("chat") or {}
+        text = message.get("text")
+        if text is None or "id" not in chat:
+            continue
+        updates.append(
+            Update(update_id=int(item["update_id"]), chat_id=str(chat["id"]), text=text)
+        )
+    return updates
+
+
+def _httpx_get(url: str, params: dict[str, str]) -> dict[str, Any]:
+    """Default Telegram getter: a GET via httpx (timeout > long-poll hold)."""
+    import httpx
+
+    response = httpx.get(
+        url, params=params, timeout=TELEGRAM_LONG_POLL + TELEGRAM_TIMEOUT
+    )
+    response.raise_for_status()
+    data: dict[str, Any] = response.json()
+    return data
+
+
+def telegram_fetcher(
+    bot_token: str,
+    *,
+    get: Callable[[str, dict[str, str]], dict[str, Any]] | None = None,
+) -> TelegramFetcher:
+    """Build a :data:`TelegramFetcher` that long-polls the Bot API for messages."""
+    getter = get or _httpx_get
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+
+    def fetch(offset: int | None) -> list[Update]:
+        params: dict[str, str] = {"timeout": str(TELEGRAM_LONG_POLL)}
+        if offset is not None:
+            params["offset"] = str(offset)
+        return parse_updates(getter(url, params))
+
+    return fetch
 
 
 def telegram_sender(
@@ -96,8 +156,12 @@ __all__ = [
     "Notifier",
     "NullNotifier",
     "Sender",
+    "TelegramFetcher",
     "TelegramNotifier",
     "TelegramPoster",
+    "Update",
     "make_notifier",
+    "parse_updates",
+    "telegram_fetcher",
     "telegram_sender",
 ]

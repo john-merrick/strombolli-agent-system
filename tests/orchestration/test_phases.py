@@ -88,6 +88,22 @@ def test_suspend_persists_state_and_sets_queued(tmp_path: object) -> None:
     assert restored is not None and restored.status == "queued"
 
 
+def test_suspend_sends_investigate_opener(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from stromboli.orchestration.paused import PausedIndex
+
+    openers: list[str] = []
+    index = PausedIndex(Path(str(tmp_path)) / "paused.db")
+    p = TriagePhases(GraphDeps(paused_index=index, investigate_notify=openers.append))
+    s = StromboliState(
+        task_id="pg-1", source="notion", raw_request="x", spec=Spec(goal="add a flag")
+    )
+    p.suspend(s, "verifier rejected")
+    assert openers and "#1" in openers[0]
+    assert "add a flag" in openers[0] and "verifier rejected" in openers[0]
+
+
 def test_finalize_writes_complete_and_telegram() -> None:
     pushes: list[str] = []
     notion = FakeNotion()

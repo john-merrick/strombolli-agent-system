@@ -165,16 +165,33 @@ class TriagePhases:
         queued = state.model_copy(
             update={"status": "queued", "reflections": [*state.reflections, reason]}
         )
+        name = state.spec.goal if state.spec is not None else (state.raw_request[:60])
         index = self._paused_index()
+        ref: int | None = None
         if index is not None:
-            index.suspend(queued, reason=reason)
+            ref = index.suspend(queued, reason=reason, name=name).ref
         notion = self.deps.notion
         if notion is not None and state.source == "notion":
             try:
                 notion.update_task(state.task_id, status=STATUS_QUEUED)
             except Exception:  # noqa: BLE001 - status write must never crash
                 pass
+        self._send_opener(ref, name, reason)
         return queued
+
+    def _send_opener(self, ref: int | None, name: str, reason: str) -> None:
+        """Post the investigate-bot opener that starts the resolution chat."""
+        send = self.deps.investigate_notify
+        if send is None or ref is None:
+            return
+        try:
+            send(
+                f"🔎 #{ref} — {name} queued.\nReason: {reason}\n"
+                f"Reply `#{ref} <message>` to dig in, `#{ref} ✅` to apply, "
+                f"`/queued` to list."
+            )
+        except Exception:  # noqa: BLE001 - a notification must never break a run
+            pass
 
     def finalize(self, state: StromboliState) -> StromboliState:
         """Terminal write-back: Notion status + summary + Telegram (PRD §6.7/§6.9).

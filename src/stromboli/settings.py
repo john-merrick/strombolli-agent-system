@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     # -- Telegram notifications (optional) ---------------------------------- #
     telegram_bot_token: str | None = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str | None = Field(default=None, alias="TELEGRAM_CHAT_ID")
+    #: The dedicated investigate-bot (the bidirectional escalation resolver). The
+    #: authorized sender is :attr:`telegram_chat_id` (single operator).
+    telegram_investigate_bot_token: str | None = Field(
+        default=None, alias="TELEGRAM_INVESTIGATE_BOT_TOKEN"
+    )
 
     @field_validator(
         "workspace_root", "chroma_persist_dir", "checkpoint_db_path", mode="after"

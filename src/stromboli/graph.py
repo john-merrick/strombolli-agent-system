@@ -121,6 +121,9 @@ class GraphDeps:
     #: Paused-task index for the investigate loop (suspend/resume). ``None`` →
     #: built lazily from ``workspace_root`` when a task suspends; inject in tests.
     paused_index: Any = None
+    #: Sender for the dedicated investigate-bot — used to post the opener when a
+    #: task suspends. ``None`` → no opener sent (e.g. offline/tests).
+    investigate_notify: Any = None
 
 
 def _wrap(
