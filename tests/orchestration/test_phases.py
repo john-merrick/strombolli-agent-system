@@ -65,6 +65,29 @@ def test_mark_escalated() -> None:
     assert s.status == "escalated" and "ambiguous" in s.reflections[-1]
 
 
+def test_suspend_persists_state_and_sets_queued(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from stromboli.orchestration.paused import PausedIndex
+
+    notion = FakeNotion()
+    index = PausedIndex(Path(str(tmp_path)) / "paused.db")
+    p = TriagePhases(GraphDeps(notion=notion, paused_index=index))
+    s = StromboliState(
+        task_id="pg-9", source="notion", raw_request="x",
+        session_id="sess-1", spec=Spec(goal="g"),
+    )
+    out = p.suspend(s, "verifier rejected")
+
+    assert out.status == "queued"
+    assert "verifier rejected" in out.reflections[-1]
+    assert ("pg-9", "Queued") in notion.status_writes
+    row = index.get("pg-9")
+    assert row is not None and row.ref == 1 and row.session_id == "sess-1"
+    restored = index.load_state("pg-9")
+    assert restored is not None and restored.status == "queued"
+
+
 def test_finalize_writes_complete_and_telegram() -> None:
     pushes: list[str] = []
     notion = FakeNotion()

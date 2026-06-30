@@ -41,15 +41,23 @@ STATUS_TODO: Final = "To do"
 STATUS_WORKING: Final = "Working on"
 STATUS_REVIEW: Final = "Review"
 STATUS_COMPLETE: Final = "Complete"
+#: A task suspended mid-run, awaiting human input via the investigate loop.
+#: NOTE: this option must be added once, by hand, to the Notion DB's Status
+#: property — the API does not auto-create status options.
+STATUS_QUEUED: Final = "Queued"
 
 VALID_STATUSES: Final[frozenset[str]] = frozenset(
-    {STATUS_TODO, STATUS_WORKING, STATUS_REVIEW, STATUS_COMPLETE}
+    {STATUS_TODO, STATUS_WORKING, STATUS_REVIEW, STATUS_COMPLETE, STATUS_QUEUED}
 )
 
 #: Terminal statuses the agent must not pick up — ``Complete`` is done and
 #: ``Review`` is parked for a human. Anything else (``To do``, or a task left
 #: in ``Working on`` by a crashed/incomplete run) is fair game to (re)dispatch.
 TERMINAL_STATUSES: Final[frozenset[str]] = frozenset({STATUS_REVIEW, STATUS_COMPLETE})
+
+#: Statuses the poll must skip: terminal ones plus ``Queued`` (suspended, owned
+#: by the investigate loop, resumed by it — never re-dispatched by the poll).
+NON_DISPATCHABLE_STATUSES: Final[frozenset[str]] = TERMINAL_STATUSES | {STATUS_QUEUED}
 
 #: Notion property names on the task page (must match the database schema).
 PROP_TASK_NAME: Final = "Task name"
@@ -376,14 +384,15 @@ def is_dispatchable(task: Task) -> bool:
     """The intake guard: Ready, assigned to the Agent, and not yet terminal.
 
     Dispatchable means ``Ready`` is checked, ``Assigned to`` is the Agent, and
-    ``Status`` is anything other than ``Complete``/``Review`` (so ``To do`` *and*
-    a task stranded in ``Working on`` by a crashed run are both picked up).
+    ``Status`` is none of ``Complete``/``Review``/``Queued`` (so ``To do`` *and* a
+    task stranded in ``Working on`` by a crashed run are both picked up, but a
+    ``Queued`` task — suspended for the investigate loop — is left alone).
     """
     return (
         task.ready
         and task.assigned_to == ASSIGNEE_AGENT
         and task.status is not None
-        and task.status not in TERMINAL_STATUSES
+        and task.status not in NON_DISPATCHABLE_STATUSES
     )
 
 
@@ -454,7 +463,9 @@ def resilient_append(
 
 __all__ = [
     "ASSIGNEE_AGENT",
+    "NON_DISPATCHABLE_STATUSES",
     "STATUS_COMPLETE",
+    "STATUS_QUEUED",
     "STATUS_REVIEW",
     "STATUS_TODO",
     "STATUS_WORKING",

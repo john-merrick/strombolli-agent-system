@@ -9,6 +9,7 @@ import httpx
 from stromboli.integrations.notion import (
     ASSIGNEE_AGENT,
     STATUS_COMPLETE,
+    STATUS_QUEUED,
     STATUS_REVIEW,
     STATUS_TODO,
     STATUS_WORKING,
@@ -65,6 +66,11 @@ def test_is_dispatchable_retries_working_but_skips_terminal() -> None:
     assert is_dispatchable(parse_task(_task_page(status=STATUS_TODO)))
     assert not is_dispatchable(parse_task(_task_page(status=STATUS_COMPLETE)))
     assert not is_dispatchable(parse_task(_task_page(status=STATUS_REVIEW)))
+
+
+def test_queued_task_is_not_dispatched() -> None:
+    # A suspended (Queued) task is owned by the investigate loop, never the poll.
+    assert not is_dispatchable(parse_task(_task_page(status=STATUS_QUEUED)))
 
 
 def test_query_ready_tasks_filters_guard() -> None:

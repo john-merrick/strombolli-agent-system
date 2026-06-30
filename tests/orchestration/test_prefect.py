@@ -7,8 +7,10 @@ import pytest
 pytest.importorskip("prefect")
 
 from stromboli.graph import GraphDeps  # noqa: E402
+from stromboli.orchestration.paused import PausedIndex  # noqa: E402
 from stromboli.orchestration.phases import TriagePhases  # noqa: E402
 from stromboli.orchestration.prefect_flow import triage_flow  # noqa: E402
+from tests.nodes._fakes import RoutingGateway  # noqa: E402
 
 
 def test_prefect_triage_flow_reaches_done() -> None:
@@ -16,3 +18,24 @@ def test_prefect_triage_flow_reaches_done() -> None:
     phases = TriagePhases(GraphDeps())
     final = triage_flow("task-1", source="cli", phases=phases)
     assert final.status == "done"
+
+
+def test_prefect_triage_flow_suspends_on_escalate(tmp_path: object) -> None:
+    from pathlib import Path
+
+    # Force the verifier to escalate → the flow suspends (Queued) instead of finalizing.
+    gw = RoutingGateway(
+        {"Spec": {"goal": "g", "ambiguous": False},
+         "Verdict": {"decision": "escalate", "reason": "no good"}}
+    )
+    index = PausedIndex(Path(str(tmp_path)) / "paused.db")
+    phases = TriagePhases(
+        GraphDeps(
+            gateway=gw, reasoning_model="m", prompt_model="p", verifier_model="g",
+            paused_index=index,
+        )
+    )
+    final = triage_flow("t-esc", source="cli", phases=phases)
+    assert final.status == "queued"
+    row = index.get("t-esc")
+    assert row is not None and row.ref == 1

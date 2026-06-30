@@ -21,8 +21,10 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 #: The lifecycle a task moves through, surfaced for status / tracing.
+#: ``queued`` is a *suspended* task awaiting human input via the investigate
+#: loop (PRD investigate-loop design) — distinct from ``escalated`` (terminal).
 Status = Literal[
-    "intake", "specced", "coding", "verifying", "pr", "done", "escalated"
+    "intake", "specced", "coding", "verifying", "pr", "done", "escalated", "queued"
 ]
 #: Where a task originated — an Intake source (PRD §6.1).
 Source = Literal["notion", "telegram", "cli"]

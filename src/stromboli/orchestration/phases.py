@@ -138,6 +138,44 @@ class TriagePhases:
             update={"status": "escalated", "reflections": [*state.reflections, reason]}
         )
 
+    # -- suspend (the investigate loop; design DL-2) ----------------------- #
+    def _paused_index(self) -> Any:
+        """The injected paused index, or one built from ``workspace_root`` (or None)."""
+        if self.deps.paused_index is not None:
+            return self.deps.paused_index
+        root = self.deps.workspace_root
+        if root is None:
+            return None
+        from pathlib import Path
+
+        from stromboli.orchestration.paused import PausedIndex
+
+        return PausedIndex(Path(root) / ".stromboli" / "paused.db")
+
+    def suspend(self, state: StromboliState, reason: str) -> StromboliState:
+        """Suspend a Lane-B escalation for the investigate loop, instead of parking it.
+
+        Persists the full state (so the run is resumable in place), assigns a
+        short ``#N`` handle, and flips Notion to ``Queued`` (non-dispatchable, so
+        the poll won't re-grab it). The run is *not* finalized — a human resumes
+        it later via the investigate loop.
+        """
+        from stromboli.integrations.notion import STATUS_QUEUED
+
+        queued = state.model_copy(
+            update={"status": "queued", "reflections": [*state.reflections, reason]}
+        )
+        index = self._paused_index()
+        if index is not None:
+            index.suspend(queued, reason=reason)
+        notion = self.deps.notion
+        if notion is not None and state.source == "notion":
+            try:
+                notion.update_task(state.task_id, status=STATUS_QUEUED)
+            except Exception:  # noqa: BLE001 - status write must never crash
+                pass
+        return queued
+
     def finalize(self, state: StromboliState) -> StromboliState:
         """Terminal write-back: Notion status + summary + Telegram (PRD §6.7/§6.9).
 

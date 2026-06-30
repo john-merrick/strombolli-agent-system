@@ -118,6 +118,9 @@ class GraphDeps:
     base_branch: str = "main"
     #: PR node opens no real PR while true (Phase 0/1 default; live in Phase 6).
     dry_run_pr: bool = True
+    #: Paused-task index for the investigate loop (suspend/resume). ``None`` →
+    #: built lazily from ``workspace_root`` when a task suspends; inject in tests.
+    paused_index: Any = None
 
 
 def _wrap(

@@ -68,6 +68,11 @@ def finalize(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.finalize(state)
 
 
+@task(cache_policy=NO_CACHE)
+def suspend(phases: TriagePhases, state: StromboliState, reason: str) -> StromboliState:
+    return phases.suspend(state, reason)
+
+
 @flow(name="stromboli-triage")
 def triage_flow(
     task_id: str,
@@ -82,13 +87,14 @@ def triage_flow(
 
     state = intake(phases, state)
     state = spec(phases, state)
+    # Lane-B escalations suspend (Queued) for the investigate loop, not finalize.
     if phases.is_ambiguous(state):
-        return finalize(phases, phases.mark_escalated(state, "spec is ambiguous"))
+        return suspend(phases, state, "spec is ambiguous")
 
     state = prompt(phases, state)
     for _ in range(phases.deps.budgets.max_outer_revisions + 1):
         state = coding(phases, state)
-        if phases.coding_escalated(state):  # rate-limit cutoff
+        if phases.coding_escalated(state):  # rate-limit cutoff (auto lane, not Lane B)
             return finalize(phases, state)
         state = verify(phases, state)
         route = phases.verdict_route(state)
@@ -98,10 +104,10 @@ def triage_flow(
             return finalize(phases, state)
         if route == "escalate":
             reason = state.verdict.reason if state.verdict else "escalate"
-            return finalize(phases, phases.mark_escalated(state, reason))
+            return suspend(phases, state, reason)
         log.info("revise cycle %d", state.outer_iterations)
 
-    return finalize(phases, phases.mark_escalated(state, "revision cap reached"))
+    return suspend(phases, state, "revision cap reached")
 
 
 # Tasks already announced to Telegram, so a row isn't re-pinged across polls.
