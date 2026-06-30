@@ -46,6 +46,11 @@ VALID_STATUSES: Final[frozenset[str]] = frozenset(
     {STATUS_TODO, STATUS_WORKING, STATUS_REVIEW, STATUS_COMPLETE}
 )
 
+#: Terminal statuses the agent must not pick up — ``Complete`` is done and
+#: ``Review`` is parked for a human. Anything else (``To do``, or a task left
+#: in ``Working on`` by a crashed/incomplete run) is fair game to (re)dispatch.
+TERMINAL_STATUSES: Final[frozenset[str]] = frozenset({STATUS_REVIEW, STATUS_COMPLETE})
+
 #: Notion property names on the task page (must match the database schema).
 PROP_TASK_NAME: Final = "Task name"
 PROP_PROJECT: Final = "Project"
@@ -276,10 +281,11 @@ class NotionTaskClient:
         """Return the tasks in ``database_id`` that are ready for the agent.
 
         The intake guard (PRD §6.1): ``Ready`` is checked **and** ``Assigned to``
-        is ``Agent`` **and** ``Status`` is ``To do``. The ``Ready`` checkbox is
-        pushed into the Notion query filter; the assignee/status guard is applied
-        in Python (after :func:`parse_task`) so it tolerates either Notion status
-        property shape. This is the front-end for adding tasks to the workflow.
+        is ``Agent`` **and** ``Status`` is not terminal (``Complete``/``Review``).
+        The ``Ready`` checkbox is pushed into the Notion query filter; the
+        assignee/status guard is applied in Python (after :func:`parse_task`) so
+        it tolerates either Notion status property shape. This is the front-end
+        for adding tasks to the workflow.
         """
         resp = self._client.post(
             f"/v1/databases/{database_id}/query",
@@ -367,11 +373,17 @@ class NotionTaskClient:
 
 
 def is_dispatchable(task: Task) -> bool:
-    """The intake guard: Ready, assigned to the Agent, and still ``To do``."""
+    """The intake guard: Ready, assigned to the Agent, and not yet terminal.
+
+    Dispatchable means ``Ready`` is checked, ``Assigned to`` is the Agent, and
+    ``Status`` is anything other than ``Complete``/``Review`` (so ``To do`` *and*
+    a task stranded in ``Working on`` by a crashed run are both picked up).
+    """
     return (
         task.ready
         and task.assigned_to == ASSIGNEE_AGENT
-        and task.status == STATUS_TODO
+        and task.status is not None
+        and task.status not in TERMINAL_STATUSES
     )
 
 
@@ -446,6 +458,7 @@ __all__ = [
     "STATUS_REVIEW",
     "STATUS_TODO",
     "STATUS_WORKING",
+    "TERMINAL_STATUSES",
     "VALID_STATUSES",
     "AppendGateway",
     "NotionTaskClient",

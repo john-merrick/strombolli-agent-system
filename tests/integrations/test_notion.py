@@ -8,7 +8,10 @@ import httpx
 
 from stromboli.integrations.notion import (
     ASSIGNEE_AGENT,
+    STATUS_COMPLETE,
+    STATUS_REVIEW,
     STATUS_TODO,
+    STATUS_WORKING,
     NotionTaskClient,
     Task,
     build_feedback_summary,
@@ -54,6 +57,14 @@ def test_is_dispatchable_guard() -> None:
     assert not is_dispatchable(not_ready)
     wrong_assignee = parse_task(_task_page(assignee="Someone"))
     assert not is_dispatchable(wrong_assignee)
+
+
+def test_is_dispatchable_retries_working_but_skips_terminal() -> None:
+    # A run stranded in "Working on" is re-dispatched; Complete/Review are not.
+    assert is_dispatchable(parse_task(_task_page(status=STATUS_WORKING)))
+    assert is_dispatchable(parse_task(_task_page(status=STATUS_TODO)))
+    assert not is_dispatchable(parse_task(_task_page(status=STATUS_COMPLETE)))
+    assert not is_dispatchable(parse_task(_task_page(status=STATUS_REVIEW)))
 
 
 def test_query_ready_tasks_filters_guard() -> None:

@@ -98,18 +98,22 @@ def triage_flow(
     return finalize(phases, phases.mark_escalated(state, "revision cap reached"))
 
 
-# Tasks already announced to Telegram, so a lingering "To do" row isn't
-# re-pinged across polls. Lives for the serve() process's lifetime; the Notion
-# status flip (To do → Working on) is the real re-dispatch guard.
+# Tasks already announced to Telegram, so a row isn't re-pinged across polls.
 _ANNOUNCED: set[str] = set()
+# Tasks being built right now in this process. Since a task in ``Working on`` is
+# now dispatchable (so crashed runs get retried), this is what stops the 30s
+# poll from re-dispatching a task that's still mid-build in this worker.
+_IN_FLIGHT: set[str] = set()
 
 
 @flow(name="stromboli-poll")
 def poll_flow(phases: TriagePhases | None = None) -> int:
-    """Poll Notion and trigger a triage flow per Ready task (the front-end).
+    """Poll Notion and trigger a triage flow per dispatchable task (the front-end).
 
     Each newly-seen task is flagged to Telegram (name + id) before it's built,
-    so the watcher monitors out loud — same signal as the ``watch`` daemon.
+    so the watcher monitors out loud — same signal as the ``watch`` daemon. A
+    task already in flight in this process is skipped, so the recurring poll
+    doesn't double-dispatch a long-running build.
     """
     from datetime import datetime
 
@@ -123,14 +127,23 @@ def poll_flow(phases: TriagePhases | None = None) -> int:
     notifier = built.deps.notifier
 
     tasks = notion.query_ready_tasks(settings.notion_task_db_id)
+    dispatched = 0
     for t in tasks:
+        if t.page_id in _IN_FLIGHT:
+            log.info("skip %s (%s): already in flight", t.name, t.page_id)
+            continue
         if t.page_id not in _ANNOUNCED:
             _ANNOUNCED.add(t.page_id)
             now = datetime.now().isoformat(timespec="seconds")
             notifier.notify(f"🆕 New task picked up: {t.name} ({t.page_id}) at {now}")
             log.info("dispatching %s (%s)", t.name, t.page_id)
-        triage_flow(t.page_id, source="notion", phases=built)
-    return len(tasks)
+        _IN_FLIGHT.add(t.page_id)
+        try:
+            triage_flow(t.page_id, source="notion", phases=built)
+            dispatched += 1
+        finally:
+            _IN_FLIGHT.discard(t.page_id)
+    return dispatched
 
 
 def serve(interval: float = 30.0) -> None:
