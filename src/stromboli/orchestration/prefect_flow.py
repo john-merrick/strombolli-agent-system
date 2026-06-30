@@ -73,6 +73,14 @@ def suspend(phases: TriagePhases, state: StromboliState, reason: str) -> Strombo
     return phases.suspend(state, reason)
 
 
+def _beat(phases: TriagePhases, text: str) -> None:
+    """A best-effort status-bot heartbeat at a phase boundary (live pulse)."""
+    try:
+        phases.deps.notifier.notify(text)
+    except Exception:  # noqa: BLE001 - a heartbeat must never break the flow
+        pass
+
+
 @flow(name="stromboli-triage")
 def triage_flow(
     task_id: str,
@@ -87,16 +95,20 @@ def triage_flow(
 
     state = intake(phases, state)
     state = spec(phases, state)
+    label = (state.spec.goal if state.spec is not None else task_id)[:60]
     # Lane-B escalations suspend (Queued) for the investigate loop, not finalize.
     if phases.is_ambiguous(state):
         return suspend(phases, state, "spec is ambiguous")
+    _beat(phases, f"📝 {label}: specced")
 
     state = prompt(phases, state)
     try:
-        for _ in range(phases.deps.budgets.max_outer_revisions + 1):
+        for attempt in range(phases.deps.budgets.max_outer_revisions + 1):
+            _beat(phases, f"🔧 {label}: coding (attempt {attempt + 1})")
             state = coding(phases, state)
             if phases.coding_escalated(state):  # rate-limit (auto lane, not Lane B)
                 return finalize(phases, state)
+            _beat(phases, f"🔎 {label}: verifying")
             state = verify(phases, state)
             route = phases.verdict_route(state)
             if route == "pr":

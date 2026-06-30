@@ -32,6 +32,46 @@ from stromboli.state import StromboliState
 _APPEND_FIELDS = ("test_results", "reflections")
 
 
+def _label(state: StromboliState) -> str:
+    """A human-friendly task label for notifications."""
+    if state.spec is not None and state.spec.goal:
+        return state.spec.goal[:80]
+    return (state.raw_request[:80] or state.task_id) if state.raw_request else state.task_id
+
+
+def diffstat(diff: str | None) -> tuple[int, int, int]:
+    """``(files, additions, deletions)`` from a unified git diff (best-effort)."""
+    if not diff:
+        return (0, 0, 0)
+    files = additions = deletions = 0
+    for line in diff.splitlines():
+        if line.startswith("diff --git"):
+            files += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    return (files, additions, deletions)
+
+
+def _terminal_summary(state: StromboliState, *, done: bool) -> str:
+    """A rich Telegram summary of a finished task — the actions it took."""
+    label = _label(state)
+    if not done:
+        reason = state.reflections[-1] if state.reflections else "needs review"
+        return f"🚨 Review needed: {label}\n   {reason}"
+    lines = [f"✅ Done: {label}"]
+    files, adds, dels = diffstat(state.code_diff)
+    if files:
+        lines.append(f"   changed {files} file(s), +{adds}/-{dels}")
+    if state.verdict is not None:
+        note = state.verdict.coverage_note or state.verdict.reason
+        lines.append(f"   verifier: {state.verdict.decision} — {note}")
+    if state.pr_url:
+        lines.append(f"   PR: {state.pr_url}")
+    return "\n".join(lines)
+
+
 @dataclass
 class TriagePhases:
     """Phase steps + routing helpers over a :class:`GraphDeps`."""
@@ -180,6 +220,9 @@ class TriagePhases:
             except Exception:  # noqa: BLE001 - status write must never crash
                 pass
         self._send_opener(ref, name, reason)
+        # Status-bot heartbeat so the main feed shows it parked for your input.
+        tag = f" (#{ref})" if ref is not None else ""
+        self.deps.notifier.notify(f"⏸️ Queued for your input{tag}: {name}\n   {reason}")
         return queued
 
     def resume_with_guidance(
@@ -250,11 +293,7 @@ class TriagePhases:
                 )
             except Exception:  # noqa: BLE001 - write-back must never crash
                 pass
-        if done:
-            self.deps.notifier.done(state.task_id, state.pr_url)
-        else:
-            reason = state.reflections[-1] if state.reflections else "needs review"
-            self.deps.notifier.escalation(state.task_id, reason)
+        self.deps.notifier.notify(_terminal_summary(state, done=done))
         # Terminal outcome → free the durable worktree (suspend never calls
         # finalize, so a Queued task's worktree survives for resume/probe).
         cleanup = self.deps.worktree_cleanup

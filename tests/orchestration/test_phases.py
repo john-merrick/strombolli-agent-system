@@ -147,6 +147,14 @@ def test_suspend_sends_investigate_opener(tmp_path: object) -> None:
     assert "add a flag" in openers[0] and "verifier rejected" in openers[0]
 
 
+def test_diffstat_parses_unified_diff() -> None:
+    from stromboli.orchestration.phases import diffstat
+
+    diff = "diff --git a/x b/x\n+++ b/x\n+one\n+two\n--- a/x\n-gone\n unchanged"
+    assert diffstat(diff) == (1, 2, 1)  # +++/--- not counted
+    assert diffstat(None) == (0, 0, 0)
+
+
 def test_finalize_writes_complete_and_telegram() -> None:
     pushes: list[str] = []
     notion = FakeNotion()
@@ -155,13 +163,18 @@ def test_finalize_writes_complete_and_telegram() -> None:
     )
     done = StromboliState(
         task_id="pg-1", source="notion", raw_request="x", status="done",
-        pr_url="https://pr/1", spec=Spec(goal="g"),
-        verdict=Verdict(decision="pass", reason="ok"),
+        pr_url="https://pr/1", spec=Spec(goal="add a flag"),
+        verdict=Verdict(decision="pass", reason="ok", coverage_note="covers it"),
+        code_diff="diff --git a/foo b/foo\n+added\n-removed",
     )
     p.finalize(done)
     assert ("pg-1", "Complete") in notion.status_writes
     assert any("build summary" in md for _p, md in notion.appended)
-    assert any("Done" in x for x in pushes)
+    # Rich done ping: name + diff stat + verifier + PR link.
+    ping = next(x for x in pushes if "Done" in x)
+    assert "add a flag" in ping and "https://pr/1" in ping
+    assert "+1/-1" in ping and "1 file" in ping
+    assert "verifier: pass" in ping
 
 
 def test_finalize_escalated_writes_review() -> None:
@@ -176,4 +189,4 @@ def test_finalize_escalated_writes_review() -> None:
     )
     p.finalize(esc)
     assert ("pg-2", "Review") in notion.status_writes
-    assert any("Escalation" in x for x in pushes)
+    assert any("Review needed" in x and "ambiguous" in x for x in pushes)
