@@ -268,6 +268,36 @@ def make_prober(
     return prober
 
 
+def make_resumer(phases: Any, index: PausedIndex, *, notion: Any = None) -> Resumer:
+    """Build the ``✅`` resume path: apply guidance and re-run the task in place.
+
+    Loads the suspended state, flips Notion ``Working on``, runs one guided
+    coding→verify cycle via the phases, finalizes (Complete or Review), and closes
+    the paused row. A second failure lands in Review — never re-queued (DL-13).
+    """
+    from stromboli.integrations.notion import STATUS_WORKING
+
+    def resumer(task: PausedTask, guidance: str) -> str:
+        state = index.load_state(task.task_id)
+        if state is None:
+            index.resolve(task.task_id, state="expired")
+            return f"#{task.ref}: lost the saved state — can't resume (parked)."
+        if notion is not None and state.source == "notion":
+            try:
+                notion.update_task(task.task_id, status=STATUS_WORKING)
+            except Exception:  # noqa: BLE001 - status write must not block the resume
+                logger.warning("Could not set Working on for #%s.", task.ref)
+        final = phases.resume_with_guidance(state, guidance)
+        phases.finalize(final)
+        index.resolve(task.task_id, state="resumed")
+        if final.status == "done":
+            tail = f" → {final.pr_url}" if final.pr_url else ""
+            return f"#{task.ref} resumed and completed{tail}."
+        return f"#{task.ref} still didn't pass after that — parked to Review."
+
+    return resumer
+
+
 _HELP = (
     "Stromboli investigate loop:\n"
     "• `/queued` — list queued tasks\n"
@@ -285,5 +315,6 @@ __all__ = [
     "Responder",
     "Resumer",
     "make_prober",
+    "make_resumer",
     "parse_command",
 ]

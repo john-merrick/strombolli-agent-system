@@ -179,6 +179,34 @@ class TriagePhases:
         self._send_opener(ref, name, reason)
         return queued
 
+    def resume_with_guidance(
+        self, state: StromboliState, guidance: str
+    ) -> StromboliState:
+        """Resume a suspended task once with human guidance (design DL-13).
+
+        Folds the guidance into the coding prompt + reflections and runs a single
+        coding→verify cycle: ``pass`` → PR + memory (done); anything else →
+        ``escalated`` (Review). A second failure is **not** re-queued — it goes to
+        a human, so the loop can't cycle forever. Terminal I/O (Notion/Telegram)
+        is the caller's ``finalize``; this method only computes the next state.
+        """
+        merged = state.model_copy(
+            update={
+                "plan": f"{state.plan or ''}\n\nHuman guidance: {guidance}".strip(),
+                "reflections": [*state.reflections, f"resume guidance: {guidance}"],
+                "status": "coding",
+            }
+        )
+        merged = self.coding(merged)
+        if self.coding_escalated(merged):  # rate-limited again mid-resume
+            return self.mark_escalated(merged, "rate-limited on resume")
+        merged = self.verify(merged)
+        if merged.verdict is not None and merged.verdict.decision == "pass":
+            merged = self.open_pr(merged)
+            return self.memory_write(merged)
+        reason = merged.verdict.reason if merged.verdict is not None else "no verdict"
+        return self.mark_escalated(merged, f"still failing after guidance: {reason}")
+
     def _send_opener(self, ref: int | None, name: str, reason: str) -> None:
         """Post the investigate-bot opener that starts the resolution chat."""
         send = self.deps.investigate_notify

@@ -88,6 +88,27 @@ def test_suspend_persists_state_and_sets_queued(tmp_path: object) -> None:
     assert restored is not None and restored.status == "queued"
 
 
+def test_resume_with_guidance_passes_to_done() -> None:
+    p = TriagePhases(GraphDeps())  # stub coding + verify → happy path
+    s = StromboliState(
+        task_id="a", source="cli", raw_request="x", plan="original prompt",
+        status="queued",
+    )
+    out = p.resume_with_guidance(s, "use library X")
+    assert out.status == "done"
+    assert out.plan is not None and "use library X" in out.plan
+    assert any("resume guidance" in r for r in out.reflections)
+
+
+def test_resume_with_guidance_failure_escalates_not_requeues() -> None:
+    gw = RoutingGateway({"Verdict": {"decision": "revise", "reason": "still broken"}})
+    p = TriagePhases(GraphDeps(gateway=gw, verifier_model="g"))
+    s = StromboliState(task_id="a", source="cli", raw_request="x", status="queued")
+    out = p.resume_with_guidance(s, "use library X")
+    assert out.status == "escalated"  # → Review, not another Queued cycle
+    assert "still broken" in out.reflections[-1]
+
+
 def test_suspend_sends_investigate_opener(tmp_path: object) -> None:
     from pathlib import Path
 

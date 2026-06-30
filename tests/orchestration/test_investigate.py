@@ -4,19 +4,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from stromboli.integrations.telegram import Update
+from stromboli.graph import GraphDeps
+from stromboli.integrations.telegram import TelegramNotifier, Update
 from stromboli.orchestration.investigate import (
     InvestigateService,
     Prober,
     Responder,
     Resumer,
     make_prober,
+    make_resumer,
     parse_command,
 )
 from stromboli.orchestration.paused import PausedIndex, PausedTask
+from stromboli.orchestration.phases import TriagePhases
 from stromboli.sandbox.runner import SandboxResult
 from stromboli.state import StromboliState
-from tests.nodes._fakes import make_worktree
+from tests.nodes._fakes import FakeNotion, RoutingGateway, make_worktree
 
 
 def _state(task_id: str = "t1") -> StromboliState:
@@ -184,6 +187,53 @@ def test_retest_command_invokes_prober_and_records(tmp_path: Path) -> None:
     svc.handle(Update(update_id=1, chat_id="42", text="/retest #1"))
     assert "tests passed" in sent[-1]
     assert any(m["role"] == "probe" for m in idx.transcript("a"))
+
+
+# -- resume (✅) ------------------------------------------------------------ #
+def _queued(idx: PausedIndex, task_id: str = "a") -> None:
+    idx.suspend(
+        _state(task_id).model_copy(update={"status": "queued"}), reason="r"
+    )
+
+
+def test_make_resumer_completes_and_closes(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    _queued(idx)
+    notion = FakeNotion()
+    pushes: list[str] = []
+    phases = TriagePhases(  # stub coding/verify → happy path → done
+        GraphDeps(notion=notion, notifier=TelegramNotifier(send=pushes.append))
+    )
+    resumer = make_resumer(phases, idx, notion=notion)
+    task = idx.get("a")
+    assert task is not None
+    msg = resumer(task, "use X")
+    assert "completed" in msg.lower()
+    assert idx.by_ref(1) is None  # paused row closed
+    assert ("a", "Working on") in notion.status_writes
+    assert ("a", "Complete") in notion.status_writes
+
+
+def test_make_resumer_failure_parks_to_review(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    _queued(idx)
+    notion = FakeNotion()
+    gw = RoutingGateway({"Verdict": {"decision": "revise", "reason": "nope"}})
+    phases = TriagePhases(GraphDeps(gateway=gw, verifier_model="g", notion=notion))
+    resumer = make_resumer(phases, idx, notion=notion)
+    task = idx.get("a")
+    assert task is not None
+    msg = resumer(task, "use X")
+    assert "review" in msg.lower()
+    assert ("a", "Review") in notion.status_writes
+
+
+def test_make_resumer_handles_lost_state(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    phases = TriagePhases(GraphDeps())
+    resumer = make_resumer(phases, idx)
+    ghost = PausedTask(task_id="ghost", ref=9, reason="r", paused_at="x", state="open")
+    assert "can't resume" in resumer(ghost, "use X").lower()
 
 
 # -- the serve loop --------------------------------------------------------- #
