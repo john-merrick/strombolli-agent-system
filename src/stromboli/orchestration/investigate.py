@@ -116,7 +116,11 @@ class InvestigateService:
                 update.chat_id,
             )
             return
-        reply = self._dispatch(parse_command(update.text))
+        try:
+            reply = self._dispatch(parse_command(update.text))
+        except Exception:  # noqa: BLE001 - one bad message must never kill the loop
+            logger.exception("Error handling investigate message.")
+            reply = "⚠️ Something went wrong handling that — try again, /queued, or /drop #N."
         if reply:
             try:
                 self.send(reply)
@@ -329,7 +333,15 @@ def make_resumer(phases: Any, index: PausedIndex, *, notion: Any = None) -> Resu
     coding→verify cycle via the phases, finalizes (Complete or Review), and closes
     the paused row. A second failure lands in Review — never re-queued (DL-13).
     """
-    from stromboli.integrations.notion import STATUS_WORKING
+    from stromboli.integrations.notion import STATUS_REVIEW, STATUS_WORKING
+
+    def _park_to_review(task_id: str, source: str) -> None:
+        index.resolve(task_id, state="expired")
+        if notion is not None and source == "notion":
+            try:
+                notion.update_task(task_id, status=STATUS_REVIEW)
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not park #%s to Review.", task_id)
 
     def resumer(task: PausedTask, guidance: str) -> str:
         state = index.load_state(task.task_id)
@@ -341,8 +353,13 @@ def make_resumer(phases: Any, index: PausedIndex, *, notion: Any = None) -> Resu
                 notion.update_task(task.task_id, status=STATUS_WORKING)
             except Exception:  # noqa: BLE001 - status write must not block the resume
                 logger.warning("Could not set Working on for #%s.", task.ref)
-        final = phases.resume_with_guidance(state, guidance)
-        phases.finalize(final)
+        try:
+            final = phases.resume_with_guidance(state, guidance)
+            phases.finalize(final)
+        except Exception as exc:  # noqa: BLE001 - a failed build parks, never crashes
+            logger.warning("Resume of #%s failed: %s", task.ref, exc)
+            _park_to_review(task.task_id, state.source)
+            return f"#{task.ref} couldn't build on resume ({exc}) — parked to Review."
         index.resolve(task.task_id, state="resumed")
         if final.status == "done":
             tail = f" → {final.pr_url}" if final.pr_url else ""

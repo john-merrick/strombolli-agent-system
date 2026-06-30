@@ -233,6 +233,41 @@ def test_make_resumer_failure_parks_to_review(tmp_path: Path) -> None:
     assert ("a", "Review") in notion.status_writes
 
 
+def test_make_resumer_failed_build_parks_not_crashes(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    _queued(idx)
+    notion = FakeNotion()
+
+    class _BoomPhases:
+        def resume_with_guidance(self, _s: object, _g: str) -> object:
+            raise ValueError("Task has no Project relation")
+
+        def finalize(self, _s: object) -> None:  # pragma: no cover - unreached
+            raise AssertionError("unreached")
+
+    resumer = make_resumer(_BoomPhases(), idx, notion=notion)
+    task = idx.get("a")
+    assert task is not None
+    msg = resumer(task, "use X")  # must NOT raise
+    assert "couldn't build" in msg.lower() and "review" in msg.lower()
+    assert ("a", "Review") in notion.status_writes
+    assert idx.by_ref(1) is None  # row closed
+
+
+def test_handle_swallows_dispatch_errors(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    idx.suspend(_state("a"), reason="r")
+    idx.set_guidance("a", "do the thing")
+    sent: list[str] = []
+
+    def boom_resumer(_task: PausedTask, _g: str) -> str:
+        raise RuntimeError("kaboom")
+
+    svc = _service(idx, sent, resumer=boom_resumer)
+    svc.handle(Update(update_id=1, chat_id="42", text="#1 ✅"))  # must NOT raise
+    assert sent and "went wrong" in sent[-1].lower()
+
+
 def test_make_resumer_handles_lost_state(tmp_path: Path) -> None:
     idx = PausedIndex(tmp_path / "p.db")
     phases = TriagePhases(GraphDeps())
