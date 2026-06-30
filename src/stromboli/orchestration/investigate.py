@@ -235,6 +235,39 @@ class InvestigateService:
                     logger.warning("Expiry sweep failed.", exc_info=True)
 
 
+def make_prober(
+    index: PausedIndex,
+    sandbox: Any,
+    worktree_for: Any,
+    *,
+    test_command: Any = None,
+) -> Prober:
+    """Build the ``/retest`` probe: re-run a suspended task's tests in its worktree.
+
+    Read/execute only — it never edits. The result is fed into the transcript so
+    the investigator sees fresh test output on the next turn (design DL-3).
+    """
+    from stromboli.sandbox.runner import DEFAULT_TEST_COMMAND
+
+    command = test_command or DEFAULT_TEST_COMMAND
+
+    def prober(task: PausedTask) -> str:
+        state = index.load_state(task.task_id)
+        if state is None:
+            return "no saved state to test."
+        try:
+            worktree = worktree_for(state)
+            result = sandbox.run_tests(worktree.path, command)
+        except Exception as exc:  # noqa: BLE001 - a probe failure is just reported
+            return f"probe failed: {exc}"
+        if result.passed:
+            return "tests passed ✅"
+        tail = result.output[-1200:]
+        return f"tests failed (exit {result.exit_code})\n{tail}"
+
+    return prober
+
+
 _HELP = (
     "Stromboli investigate loop:\n"
     "• `/queued` — list queued tasks\n"
@@ -245,4 +278,12 @@ _HELP = (
 )
 
 
-__all__ = ["Command", "InvestigateService", "Prober", "Responder", "Resumer", "parse_command"]
+__all__ = [
+    "Command",
+    "InvestigateService",
+    "Prober",
+    "Responder",
+    "Resumer",
+    "make_prober",
+    "parse_command",
+]

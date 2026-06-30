@@ -10,10 +10,13 @@ from stromboli.orchestration.investigate import (
     Prober,
     Responder,
     Resumer,
+    make_prober,
     parse_command,
 )
 from stromboli.orchestration.paused import PausedIndex, PausedTask
+from stromboli.sandbox.runner import SandboxResult
 from stromboli.state import StromboliState
+from tests.nodes._fakes import make_worktree
 
 
 def _state(task_id: str = "t1") -> StromboliState:
@@ -153,6 +156,34 @@ def test_drop_parks_to_review(tmp_path: Path) -> None:
     assert ("a", "Review") in notion.writes
     assert idx.by_ref(1) is None
     assert "dropped" in sent[-1].lower()
+
+
+# -- probe (/retest) -------------------------------------------------------- #
+class _FakeSandbox:
+    def __init__(self, result: SandboxResult) -> None:
+        self._result = result
+
+    def run_tests(self, _path: object, _command: object) -> SandboxResult:
+        return self._result
+
+
+def test_make_prober_reports_failure(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    task = idx.suspend(_state("a"), reason="r")
+    sandbox = _FakeSandbox(SandboxResult(passed=False, output="E assert x", exit_code=1))
+    prober = make_prober(idx, sandbox, lambda _s: make_worktree())
+    out = prober(task)
+    assert "tests failed" in out and "assert x" in out
+
+
+def test_retest_command_invokes_prober_and_records(tmp_path: Path) -> None:
+    idx = PausedIndex(tmp_path / "p.db")
+    idx.suspend(_state("a"), reason="r")
+    sent: list[str] = []
+    svc = _service(idx, sent, prober=lambda _t: "tests passed ✅")
+    svc.handle(Update(update_id=1, chat_id="42", text="/retest #1"))
+    assert "tests passed" in sent[-1]
+    assert any(m["role"] == "probe" for m in idx.transcript("a"))
 
 
 # -- the serve loop --------------------------------------------------------- #
