@@ -17,47 +17,53 @@ Run the UI + a scheduled poll:
 from __future__ import annotations
 
 from prefect import flow, get_run_logger, task
+from prefect.cache_policies import NO_CACHE
 
 from stromboli.orchestration.phases import TriagePhases
 from stromboli.state import StromboliState
 
+# The TriagePhases arg carries live objects (tracer, locks, clients) that can't
+# be hashed or pickled, so Prefect's default input-hash cache key blows up. We
+# don't want result caching here anyway — every phase has side effects — so
+# disable it explicitly on every task.
 
-@task
+
+@task(cache_policy=NO_CACHE)
 def intake(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.intake(state)
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def spec(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.spec(state)
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def prompt(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.prompt(state)
 
 
-@task(retries=1)
+@task(retries=1, cache_policy=NO_CACHE)
 def coding(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.coding(state)
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def verify(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.verify(state)
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def open_pr(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.open_pr(state)
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def memory_write(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.memory_write(state)
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def finalize(phases: TriagePhases, state: StromboliState) -> StromboliState:
     return phases.finalize(state)
 
@@ -147,13 +153,20 @@ def poll_flow(phases: TriagePhases | None = None) -> int:
 
 
 def serve(interval: float = 30.0) -> None:
-    """Serve the poll flow on a schedule (creates a deployment + worker)."""
+    """Serve the poll flow on a schedule (creates a deployment + worker).
+
+    ``limit=1`` serialises the runner: only one poll runs at a time, and since
+    each poll blocks on its triage subflows, the next poll can't start until the
+    current task reaches a terminal status. That's the real guard against
+    double-dispatch — ``serve`` runs each scheduled poll in its own subprocess,
+    so the in-process ``_IN_FLIGHT`` set alone wouldn't catch an overlap.
+    """
     from stromboli.orchestration.phases import TriagePhases
 
     TriagePhases.from_settings().deps.notifier.notify(
         "👀 Stromboli (Prefect) is watching the Notion queue."
     )
-    poll_flow.serve(name="stromboli-poll", interval=interval)
+    poll_flow.serve(name="stromboli-poll", interval=interval, limit=1)
 
 
 if __name__ == "__main__":
