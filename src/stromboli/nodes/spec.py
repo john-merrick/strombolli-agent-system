@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 #: Retrieves up to top-k memory snippets relevant to a request (PRD §7).
 Retriever = Callable[[str], Sequence[str]]
+#: Returns the project's context (e.g. its README/CLAUDE.md) for a task, or "".
+ProjectContext = Callable[["StromboliState"], str]
 
 _SYSTEM = (
     "You are the spec author for an autonomous coding system. Given a raw task "
@@ -37,13 +39,23 @@ def make_spec(
     *,
     model: str | None = None,
     retriever: Retriever | None = None,
+    project_context: ProjectContext | None = None,
 ) -> Node:
-    """Build the spec node. With no ``gateway`` it returns a stub spec."""
+    """Build the spec node. With no ``gateway`` it returns a stub spec.
+
+    When ``project_context`` is wired, the project's conventions (e.g. its
+    README/CLAUDE.md) are prepended so the Spec is written *with the project's
+    context assumed* — sharpening acceptance criteria and resolving gaps that
+    would otherwise be flagged ambiguous.
+    """
 
     def spec(state: StromboliState) -> dict[str, object]:
         if gateway is None or model is None:
             produced = Spec(goal=state.raw_request, ambiguous=False)
             return {"spec": produced, "status": "specced"}
+
+        project = project_context(state) if project_context is not None else ""
+        project_block = f"\n\n{project}" if project else ""
 
         context = ""
         memory_refs: list[str] = []
@@ -55,7 +67,7 @@ def make_spec(
                     f"- {s}" for s in snippets
                 )
 
-        user = f"Task request:\n{state.raw_request}{context}"
+        user = f"Task request:\n{state.raw_request}{project_block}{context}"
         try:
             produced = gateway.structured(
                 model=model, system=_SYSTEM, user=user, schema=Spec
@@ -72,4 +84,4 @@ def make_spec(
     return spec
 
 
-__all__ = ["Retriever", "make_spec"]
+__all__ = ["ProjectContext", "Retriever", "make_spec"]

@@ -109,6 +109,9 @@ class GraphDeps:
     worktree_for: WorktreeFor | None = None
     #: The three-tier memory (Phase 4): seeds Spec, learns on completion.
     memory: Memory | None = None
+    #: Project context loader for the Spec node — returns the project's
+    #: README/CLAUDE.md (from its Notion ``Context Root``) or "". ``None`` → off.
+    project_context: Any = None
     #: Where per-run trace files are written (None → no local trace file).
     workspace_root: Path | None = None
     #: GitHub gateway for the live PR node (Phase 6).
@@ -185,7 +188,10 @@ def build_graph(
         "spec",
         traced(
             "spec",
-            make_spec(deps.gateway, model=deps.reasoning_model, retriever=retriever),
+            make_spec(
+                deps.gateway, model=deps.reasoning_model, retriever=retriever,
+                project_context=deps.project_context,
+            ),
         ),
     )
     builder.add_node(
@@ -442,6 +448,10 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     """Assemble the production dependency graph from env-backed settings."""
     from stromboli.integrations.github import GitHubClient
     from stromboli.integrations.notion import NotionTaskClient
+    from stromboli.integrations.project_context import (
+        github_file_fetcher,
+        make_project_context,
+    )
     from stromboli.integrations.telegram import make_notifier, telegram_sender
     from stromboli.llm.coder import AgentCoder
     from stromboli.llm.gateway import build_gateway
@@ -471,6 +481,11 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         else None
     )
     memory = Memory.open(settings.chroma_persist_dir)
+    # Spec-node project context: fetch the project's Context Root file (README /
+    # CLAUDE.md) from GitHub so tasks are specced with the project assumed.
+    project_context = make_project_context(
+        notion, fetch=github_file_fetcher(settings.github_token)
+    )
     # Durable per-task worktrees for the phases/Prefect path (run_task overrides
     # worktree_for with its own context-managed provisioning). Kept across a
     # suspend so resume/probe rebuild on the coder's prior work; removed by
@@ -497,6 +512,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         notion=notion,
         notifier=notifier,
         memory=memory,
+        project_context=project_context,
         workspace_root=settings.workspace_root,
         coder=coder,
         sandbox=SandboxRunner(),

@@ -52,7 +52,10 @@ class TriagePhases:
         d = self.deps
         self._intake = make_intake(notion=d.notion)
         retriever = d.memory.recall_for_spec if d.memory is not None else None
-        self._spec = make_spec(d.gateway, model=d.reasoning_model, retriever=retriever)
+        self._spec = make_spec(
+            d.gateway, model=d.reasoning_model, retriever=retriever,
+            project_context=d.project_context,
+        )
         self._prompt = make_prompt(d.gateway, model=d.prompt_model, notion=d.notion)
         self._coding = make_coding(d.coder, d.sandbox, d.worktree_for)
         self._verifier = make_verifier(d.gateway, model=d.verifier_model)

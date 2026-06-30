@@ -72,6 +72,9 @@ PROP_COST: Final = "Cost"
 PROP_TOKENS: Final = "Tokens"
 #: Property name on the related Project page holding the GitHub repo.
 PROP_REPO: Final = "Repo"
+#: Property on the Project page: a GitHub blob URL to the project's context file
+#: (e.g. README.md / CLAUDE.md). Fed to the Spec node as project conventions.
+PROP_CONTEXT_ROOT: Final = "Context Root"
 
 
 # Sentinel distinguishing "argument not provided" from "set to None/0".
@@ -215,6 +218,20 @@ def parse_repo(project_page: dict[str, Any]) -> Repo:
     return Repo(owner=match.group("owner"), repo=match.group("repo"))
 
 
+def parse_context_root(project_page: dict[str, Any]) -> str | None:
+    """The ``Context Root`` URL on a Project page (a GitHub blob URL), or None.
+
+    Accepts a ``url`` or ``rich_text`` property; returns ``None`` when unset so
+    the Spec node simply proceeds without project context.
+    """
+    prop = (project_page.get("properties", {}) or {}).get(PROP_CONTEXT_ROOT)
+    if not prop:
+        return None
+    raw = prop.get("url") if prop.get("type") == "url" else _rich_text(prop, "rich_text")
+    raw = (raw or "").strip()
+    return raw or None
+
+
 # --------------------------------------------------------------------------- #
 # HTTP client                                                                 #
 # --------------------------------------------------------------------------- #
@@ -284,6 +301,12 @@ class NotionTaskClient:
         if not task.project_ids:
             raise ValueError(f"Task {task.page_id} has no Project relation")
         return parse_repo(self._get_page(task.project_ids[0]))
+
+    def get_project_context_url(self, task: Task) -> str | None:
+        """The Project's ``Context Root`` URL (a GitHub blob URL), or None."""
+        if not task.project_ids:
+            return None
+        return parse_context_root(self._get_page(task.project_ids[0]))
 
     def query_ready_tasks(self, database_id: str) -> list[Task]:
         """Return the tasks in ``database_id`` that are ready for the agent.
@@ -477,6 +500,7 @@ __all__ = [
     "Task",
     "build_feedback_summary",
     "is_dispatchable",
+    "parse_context_root",
     "parse_repo",
     "parse_task",
     "resilient_append",

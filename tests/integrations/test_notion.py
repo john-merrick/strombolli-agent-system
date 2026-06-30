@@ -45,6 +45,18 @@ def test_parse_task_extracts_fields() -> None:
     assert task.project_ids == ("proj-1",)
 
 
+def test_parse_context_root() -> None:
+    from stromboli.integrations.notion import parse_context_root
+
+    url = "https://github.com/o/r/blob/main/README.md"
+    page = {"properties": {"Context Root": {
+        "type": "rich_text", "rich_text": [{"plain_text": url}]}}}
+    assert parse_context_root(page) == url
+    assert parse_context_root({"properties": {}}) is None
+    blank = {"properties": {"Context Root": {"type": "rich_text", "rich_text": []}}}
+    assert parse_context_root(blank) is None
+
+
 def test_parse_repo_from_url() -> None:
     page = {"properties": {"Repo": {"type": "url", "url": "https://github.com/o/r"}}}
     repo = parse_repo(page)

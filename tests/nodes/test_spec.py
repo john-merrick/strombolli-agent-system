@@ -56,3 +56,13 @@ def test_spec_uses_retriever_context() -> None:
     out = make_spec(gw, model="m", retriever=lambda _q: ["prior lesson A"])(_state())
     assert "prior lesson A" in gw.calls[0]["user"]
     assert out["memory_refs"] == ["prior lesson A"]
+
+
+def test_spec_injects_project_context() -> None:
+    gw = FakeGateway({"goal": "g", "ambiguous": False})
+    node = make_spec(
+        gw, model="m",
+        project_context=lambda _s: "Project conventions (from x):\nUse framework Z",
+    )
+    node(_state())
+    assert "Use framework Z" in gw.calls[0]["user"]
