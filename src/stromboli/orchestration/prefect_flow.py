@@ -98,23 +98,48 @@ def triage_flow(
     return finalize(phases, phases.mark_escalated(state, "revision cap reached"))
 
 
+# Tasks already announced to Telegram, so a lingering "To do" row isn't
+# re-pinged across polls. Lives for the serve() process's lifetime; the Notion
+# status flip (To do → Working on) is the real re-dispatch guard.
+_ANNOUNCED: set[str] = set()
+
+
 @flow(name="stromboli-poll")
 def poll_flow(phases: TriagePhases | None = None) -> int:
-    """Poll Notion and trigger a triage flow per Ready task (the front-end)."""
+    """Poll Notion and trigger a triage flow per Ready task (the front-end).
+
+    Each newly-seen task is flagged to Telegram (name + id) before it's built,
+    so the watcher monitors out loud — same signal as the ``watch`` daemon.
+    """
+    from datetime import datetime
+
     from stromboli.integrations.notion import NotionTaskClient
     from stromboli.settings import load_settings
 
+    log = get_run_logger()
     settings = load_settings()
     notion = NotionTaskClient(settings.notion_token)
-    tasks = notion.query_ready_tasks(settings.notion_task_db_id)
     built = phases or TriagePhases.from_settings(settings)
+    notifier = built.deps.notifier
+
+    tasks = notion.query_ready_tasks(settings.notion_task_db_id)
     for t in tasks:
+        if t.page_id not in _ANNOUNCED:
+            _ANNOUNCED.add(t.page_id)
+            now = datetime.now().isoformat(timespec="seconds")
+            notifier.notify(f"🆕 New task picked up: {t.name} ({t.page_id}) at {now}")
+            log.info("dispatching %s (%s)", t.name, t.page_id)
         triage_flow(t.page_id, source="notion", phases=built)
     return len(tasks)
 
 
 def serve(interval: float = 30.0) -> None:
     """Serve the poll flow on a schedule (creates a deployment + worker)."""
+    from stromboli.orchestration.phases import TriagePhases
+
+    TriagePhases.from_settings().deps.notifier.notify(
+        "👀 Stromboli (Prefect) is watching the Notion queue."
+    )
     poll_flow.serve(name="stromboli-poll", interval=interval)
 
 
