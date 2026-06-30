@@ -252,6 +252,14 @@ class TriagePhases:
         else:
             reason = state.reflections[-1] if state.reflections else "needs review"
             self.deps.notifier.escalation(state.task_id, reason)
+        # Terminal outcome → free the durable worktree (suspend never calls
+        # finalize, so a Queued task's worktree survives for resume/probe).
+        cleanup = self.deps.worktree_cleanup
+        if cleanup is not None:
+            try:
+                cleanup(state.task_id)
+            except Exception:  # noqa: BLE001 - cleanup must never break finalize
+                pass
         return state
 
 

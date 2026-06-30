@@ -385,7 +385,15 @@ def serve_from_settings(settings: Any) -> None:
         resumer=make_resumer(phases, index, notion=deps.notion),
         prober=prober, notion=deps.notion,
     )
-    sweep = make_sweeper(index, notion=deps.notion, notify=send)
+    remove_worktree = deps.worktree_cleanup
+    sweep = make_sweeper(
+        index, notion=deps.notion, notify=send,
+        cleanup=(
+            (lambda task: remove_worktree(task.task_id))
+            if remove_worktree is not None
+            else None
+        ),
+    )
     logger.info("investigate-serve listening on strombolli-investigate-bot…")
     service.serve(telegram_fetcher(token), sweep=sweep)
 

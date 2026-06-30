@@ -92,20 +92,27 @@ def triage_flow(
         return suspend(phases, state, "spec is ambiguous")
 
     state = prompt(phases, state)
-    for _ in range(phases.deps.budgets.max_outer_revisions + 1):
-        state = coding(phases, state)
-        if phases.coding_escalated(state):  # rate-limit cutoff (auto lane, not Lane B)
-            return finalize(phases, state)
-        state = verify(phases, state)
-        route = phases.verdict_route(state)
-        if route == "pr":
-            state = open_pr(phases, state)
-            state = memory_write(phases, state)
-            return finalize(phases, state)
-        if route == "escalate":
-            reason = state.verdict.reason if state.verdict else "escalate"
-            return suspend(phases, state, reason)
-        log.info("revise cycle %d", state.outer_iterations)
+    try:
+        for _ in range(phases.deps.budgets.max_outer_revisions + 1):
+            state = coding(phases, state)
+            if phases.coding_escalated(state):  # rate-limit (auto lane, not Lane B)
+                return finalize(phases, state)
+            state = verify(phases, state)
+            route = phases.verdict_route(state)
+            if route == "pr":
+                state = open_pr(phases, state)
+                state = memory_write(phases, state)
+                return finalize(phases, state)
+            if route == "escalate":
+                reason = state.verdict.reason if state.verdict else "escalate"
+                return suspend(phases, state, reason)
+            log.info("revise cycle %d", state.outer_iterations)
+    except Exception as exc:  # noqa: BLE001
+        # An unbuildable task (e.g. no repo → worktree setup fails) must park to
+        # Review, never crash the poll into a re-dispatch loop (Queued is for
+        # chat-resolvable failures; this isn't one).
+        log.warning("triage build failed for %s: %s", task_id, exc)
+        return finalize(phases, phases.mark_escalated(state, f"unbuildable: {exc}"))
 
     return suspend(phases, state, "revision cap reached")
 

@@ -19,6 +19,29 @@ def _offline_deps() -> GraphDeps:
     return GraphDeps()
 
 
+def test_durable_worktree_for_and_remover() -> None:
+    from stromboli.graph import _durable_worktree_for, _worktree_remover
+    from tests.nodes._fakes import FakeNotion, make_worktree
+
+    calls: dict[str, list[tuple[str, str]]] = {"ensure": [], "remove": []}
+
+    class _Mgr:
+        def ensure(self, _repo: object, task_id: str, name: str) -> object:
+            calls["ensure"].append((task_id, name))
+            return make_worktree()
+
+        def remove(self, _repo: object, task_id: str, name: str) -> None:
+            calls["remove"].append((task_id, name))
+
+    notion = FakeNotion()  # get_task → page-1/"Task"; get_project_repo → Repo
+    mgr = _Mgr()
+    state = StromboliState(task_id="page-1", source="notion", raw_request="x")
+    _durable_worktree_for(mgr, notion)(state)
+    _worktree_remover(mgr, notion)("page-1")
+    assert calls["ensure"] == [("page-1", "Task")]
+    assert calls["remove"] == [("page-1", "Task")]
+
+
 def test_stub_run_reaches_done() -> None:
     final = run_task("stub", deps=_offline_deps(), checkpointer=MemorySaver())
     assert final.status == "done"

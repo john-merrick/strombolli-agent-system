@@ -88,6 +88,28 @@ def test_suspend_persists_state_and_sets_queued(tmp_path: object) -> None:
     assert restored is not None and restored.status == "queued"
 
 
+def test_finalize_cleans_up_worktree_on_terminal() -> None:
+    removed: list[str] = []
+    p = TriagePhases(GraphDeps(worktree_cleanup=removed.append))
+    done = StromboliState(task_id="t", source="cli", raw_request="x", status="done")
+    p.finalize(done)
+    assert removed == ["t"]  # terminal outcome frees the durable worktree
+
+
+def test_suspend_keeps_worktree(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from stromboli.orchestration.paused import PausedIndex
+
+    removed: list[str] = []
+    index = PausedIndex(Path(str(tmp_path)) / "paused.db")
+    p = TriagePhases(GraphDeps(paused_index=index, worktree_cleanup=removed.append))
+    p.suspend(
+        StromboliState(task_id="t", source="notion", raw_request="x"), "verifier reject"
+    )
+    assert removed == []  # suspend must NOT remove — resume/probe need the worktree
+
+
 def test_resume_with_guidance_passes_to_done() -> None:
     p = TriagePhases(GraphDeps())  # stub coding + verify → happy path
     s = StromboliState(

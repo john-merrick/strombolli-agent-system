@@ -124,6 +124,10 @@ class GraphDeps:
     #: Sender for the dedicated investigate-bot — used to post the opener when a
     #: task suspends. ``None`` → no opener sent (e.g. offline/tests).
     investigate_notify: Any = None
+    #: Remove a task's durable worktree on a terminal outcome — ``Callable[[str],
+    #: None]`` keyed by task_id. ``None`` → no cleanup (tests/offline). Not called
+    #: on suspend, so the worktree survives for resume/probe.
+    worktree_cleanup: Any = None
 
 
 def _wrap(
@@ -397,6 +401,32 @@ def _provision_worktree(
         yield worktree
 
 
+def _durable_worktree_for(manager: Any, notion: Any) -> WorktreeFor:
+    """A durable ``worktree_for`` for the phases path: ensure (don't remove)."""
+
+    def worktree_for(state: StromboliState) -> Worktree:
+        task = notion.get_task(state.task_id)
+        repo = notion.get_project_repo(task)
+        worktree: Worktree = manager.ensure(repo, task.page_id, task.name)
+        return worktree
+
+    return worktree_for
+
+
+def _worktree_remover(manager: Any, notion: Any) -> Any:
+    """Build a ``Callable[[str], None]`` that tears down a task's worktree."""
+
+    def remove(task_id: str) -> None:
+        try:
+            task = notion.get_task(task_id)
+            repo = notion.get_project_repo(task)
+            manager.remove(repo, task.page_id, task.name)
+        except Exception:  # noqa: BLE001 - cleanup is best-effort
+            logger.warning("Worktree cleanup failed for %s", task_id)
+
+    return remove
+
+
 def _log_coder_turn(record: TurnRecord) -> None:
     """Live per-turn visibility: one log line as each SDK turn streams."""
     out_tokens = (record.usage or {}).get("output_tokens")
@@ -417,7 +447,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     from stromboli.llm.gateway import build_gateway
     from stromboli.observability.tracing import build_tracer
     from stromboli.orchestration.paused import PausedIndex
-    from stromboli.sandbox.runner import SandboxRunner
+    from stromboli.sandbox.runner import SandboxRunner, WorktreeManager
 
     config = from_settings(settings)
     tracer = build_tracer(
@@ -441,6 +471,15 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         else None
     )
     memory = Memory.open(settings.chroma_persist_dir)
+    # Durable per-task worktrees for the phases/Prefect path (run_task overrides
+    # worktree_for with its own context-managed provisioning). Kept across a
+    # suspend so resume/probe rebuild on the coder's prior work; removed by
+    # finalize on a terminal outcome (and by the investigate sweeper on expiry).
+    worktree_manager = WorktreeManager(
+        settings.workspace_root, token=settings.github_token
+    )
+    worktree_for = _durable_worktree_for(worktree_manager, notion)
+    worktree_cleanup = _worktree_remover(worktree_manager, notion)
     coder = AgentCoder(
         model=config.models.coder,
         api_key=settings.anthropic_api_key,
@@ -464,8 +503,10 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         github=GitHubClient(settings.github_token),
         base_branch="main",
         dry_run_pr=False,
+        worktree_for=worktree_for,
         paused_index=paused_index,
         investigate_notify=investigate_notify,
+        worktree_cleanup=worktree_cleanup,
     )
 
 

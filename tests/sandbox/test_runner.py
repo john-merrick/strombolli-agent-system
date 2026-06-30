@@ -9,10 +9,33 @@ from stromboli.integrations.notion import Repo
 from stromboli.sandbox.runner import (
     DEFAULT_SANDBOX_IMAGE,
     SandboxRunner,
+    WorktreeManager,
     clone_url,
     derive_branch_name,
     slugify,
 )
+
+
+def test_worktree_manager_ensure_is_durable_and_idempotent(tmp_path: Path) -> None:
+    cmds: list[list[str]] = []
+    mgr = WorktreeManager(tmp_path, run=lambda argv: cmds.append(list(argv)))
+    repo = Repo(owner="o", repo="r")
+
+    wt = mgr.ensure(repo, "t1", "Add flag")
+    assert any("add" in c and "-B" in c for c in cmds)  # first call provisions
+
+    # Simulate the worktree now existing on disk (a git worktree has a .git file).
+    wt.path.mkdir(parents=True, exist_ok=True)
+    (wt.path / ".git").write_text("gitdir: ...")
+    cmds.clear()
+
+    again = mgr.ensure(repo, "t1", "Add flag")
+    assert again.path == wt.path
+    assert not any("add" in c for c in cmds)  # reused — NOT reset (keeps changes)
+
+    cmds.clear()
+    mgr.remove(repo, "t1", "Add flag")
+    assert any("remove" in c for c in cmds)
 
 
 def test_slugify() -> None:

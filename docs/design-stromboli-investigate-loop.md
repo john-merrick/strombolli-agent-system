@@ -194,18 +194,20 @@ All five phases are built and tested with injected fakes:
 5. Expiry sweeper, `serve_from_settings` factory, `stromboli investigate-serve`
    CLI, `_deps_from_settings` wiring (paused_index + investigate opener), env vars.
 
-### KNOWN GAP — worktree persistence (blocks live resume/probe)
-The suspend/resume/investigator *logic* is complete and tested, but two
-production-plumbing facts mean live resume/probe don't work end-to-end yet:
-1. `WorktreeManager.worktree(...)` is a **context manager that removes the
-   worktree on exit** — so a suspended task's worktree is torn down, leaving
-   nothing for the Investigator to probe or the resume to build on.
-2. `_deps_from_settings` does **not** wire `worktree_for` into the phases/Prefect
-   path at all (only `run_task`'s LangGraph path provisions one, transiently). So
-   the Prefect watcher currently runs the **stub** coding node.
+### Phase 6 — durable worktrees (shipped, green)
+The worktree-persistence gap is now closed, so resume/probe rebuild real code:
+- `WorktreeManager.ensure()` — durable, idempotent provisioning (no auto-remove;
+  a re-call reuses the existing worktree, keeping the coder's prior work) — plus
+  `remove()` for explicit teardown.
+- `_deps_from_settings` wires a durable `worktree_for` (ensure-based) + a
+  `worktree_cleanup` remover into the phases/Prefect path (so the Prefect watcher
+  now does real coding, not the stub; `run_task` still overrides with its own
+  context-managed provisioning).
+- `phases.finalize` frees the worktree on a terminal outcome; **suspend does
+  not**, so a Queued task's worktree survives for resume/probe; the expiry sweeper
+  removes it via its `cleanup` hook.
+- `triage_flow` guards the build: an unbuildable task (e.g. no repo) parks to
+  Review instead of crash-looping the poll.
 
-To go live, the worktree lifecycle must become **task-id-keyed and durable**:
-provisioned in the phases path, kept across a suspend, and removed only on a
-terminal outcome (done / Review / 3-day expiry → the sweeper's `cleanup` hook).
-Until then, `investigate-serve` runs and the chat/routing/guidance work, but the
-resumed build uses the stub coder. Tracked as the next work item.
+Net: the investigate loop is end-to-end on the Prefect path. Remaining
+nice-to-haves are still §11 (Prefect-UI visibility of resumes; turn/token tuning).

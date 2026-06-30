@@ -195,6 +195,35 @@ class WorktreeManager:
         finally:
             self._remove_worktree(clone, wt_path)
 
+    def ensure(self, repo: Repo, task_id: str, task_name: str) -> Worktree:
+        """Ensure a **durable** per-task worktree exists (idempotent) and return it.
+
+        Unlike :meth:`worktree`, this never removes the worktree — the investigate
+        loop needs it to survive a suspend so a resume/probe can rebuild on the
+        coder's prior work. A re-call **reuses** the existing worktree (keeping
+        those changes) instead of resetting it; only a first call creates one (from
+        the base branch). Terminal cleanup is explicit via :meth:`remove`.
+        """
+        clone = self.ensure_clone(repo)
+        branch = derive_branch_name(task_id, task_name)
+        wt_path = self._worktree_path(repo, task_id, task_name)
+        if (wt_path / ".git").exists():  # already provisioned — keep its contents
+            return Worktree(path=wt_path, branch=branch, repo=repo, clone_path=clone)
+        wt_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Adding durable worktree %s on branch %s", wt_path, branch)
+        self._run(
+            ["-C", str(clone), "worktree", "add", "-B", branch, str(wt_path),
+             f"origin/{self._base}"]
+        )
+        return Worktree(path=wt_path, branch=branch, repo=repo, clone_path=clone)
+
+    def remove(self, repo: Repo, task_id: str, task_name: str) -> None:
+        """Tear down a task's durable worktree (terminal outcome / expiry cleanup)."""
+        clone = self._clone_path(repo)
+        wt_path = self._worktree_path(repo, task_id, task_name)
+        if wt_path.exists():
+            self._remove_worktree(clone, wt_path)
+
     def _remove_worktree(self, clone: Path, wt_path: Path) -> None:
         """Remove a worktree, falling back to ``rmtree`` if git can't."""
         try:
