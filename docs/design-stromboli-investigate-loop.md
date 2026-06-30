@@ -184,3 +184,28 @@ Each phase ships green (pytest + ruff + mypy --strict), per CLAUDE.md.
 ## 11. Open follow-ups (non-blocking)
 - Prefect-UI visibility of resumed runs (Approach B) — add later if missed.
 - `MAX_INVESTIGATE_TURNS` / token budget exact values — tune during implementation.
+
+## 12. Implementation status (Phases 1–5 shipped, green)
+All five phases are built and tested with injected fakes:
+1. Suspend foundation (Queued status, PausedIndex, phases.suspend, dispatch guard).
+2. Receiver + investigate-serve skeleton (auth, command grammar, routing, loop).
+3. Investigator agent + `/retest` probe.
+4. Resume path (`resume_with_guidance`, one-fresh-revision, `make_resumer`).
+5. Expiry sweeper, `serve_from_settings` factory, `stromboli investigate-serve`
+   CLI, `_deps_from_settings` wiring (paused_index + investigate opener), env vars.
+
+### KNOWN GAP — worktree persistence (blocks live resume/probe)
+The suspend/resume/investigator *logic* is complete and tested, but two
+production-plumbing facts mean live resume/probe don't work end-to-end yet:
+1. `WorktreeManager.worktree(...)` is a **context manager that removes the
+   worktree on exit** — so a suspended task's worktree is torn down, leaving
+   nothing for the Investigator to probe or the resume to build on.
+2. `_deps_from_settings` does **not** wire `worktree_for` into the phases/Prefect
+   path at all (only `run_task`'s LangGraph path provisions one, transiently). So
+   the Prefect watcher currently runs the **stub** coding node.
+
+To go live, the worktree lifecycle must become **task-id-keyed and durable**:
+provisioned in the phases path, kept across a suspend, and removed only on a
+terminal outcome (done / Review / 3-day expiry → the sweeper's `cleanup` hook).
+Until then, `investigate-serve` runs and the chat/routing/guidance work, but the
+resumed build uses the stub coder. Tracked as the next work item.

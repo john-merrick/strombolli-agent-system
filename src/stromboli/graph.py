@@ -412,10 +412,11 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     """Assemble the production dependency graph from env-backed settings."""
     from stromboli.integrations.github import GitHubClient
     from stromboli.integrations.notion import NotionTaskClient
-    from stromboli.integrations.telegram import make_notifier
+    from stromboli.integrations.telegram import make_notifier, telegram_sender
     from stromboli.llm.coder import AgentCoder
     from stromboli.llm.gateway import build_gateway
     from stromboli.observability.tracing import build_tracer
+    from stromboli.orchestration.paused import PausedIndex
     from stromboli.sandbox.runner import SandboxRunner
 
     config = from_settings(settings)
@@ -429,6 +430,16 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     )
     notion = NotionTaskClient(settings.notion_token)
     notifier = make_notifier(settings.telegram_bot_token, settings.telegram_chat_id)
+    # The investigate loop: persist suspended state + post the opener on the
+    # dedicated investigate-bot (None when that bot/chat isn't configured).
+    paused_index = PausedIndex(settings.workspace_root / ".stromboli" / "paused.db")
+    investigate_notify = (
+        telegram_sender(
+            settings.telegram_investigate_bot_token, settings.telegram_chat_id
+        )
+        if settings.telegram_investigate_bot_token and settings.telegram_chat_id
+        else None
+    )
     memory = Memory.open(settings.chroma_persist_dir)
     coder = AgentCoder(
         model=config.models.coder,
@@ -453,6 +464,8 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         github=GitHubClient(settings.github_token),
         base_branch="main",
         dry_run_pr=False,
+        paused_index=paused_index,
+        investigate_notify=investigate_notify,
     )
 
 

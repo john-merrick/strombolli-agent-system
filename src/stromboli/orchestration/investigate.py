@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from stromboli.integrations.telegram import Sender, TelegramFetcher, Update
@@ -268,6 +269,53 @@ def make_prober(
     return prober
 
 
+def make_sweeper(
+    index: PausedIndex,
+    *,
+    max_age_days: int = 3,
+    notion: Any = None,
+    notify: Sender | None = None,
+    cleanup: Callable[[PausedTask], None] | None = None,
+    clock: Callable[[], Any] | None = None,
+) -> Callable[[], None]:
+    """Build the expiry sweeper: park tasks idle past ``max_age_days`` to Review (DL-8).
+
+    For each open task paused longer than the TTL it closes the row, flips Notion
+    to Review, runs an optional worktree ``cleanup``, and pings ``notify``. ``clock``
+    is injectable for tests.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from stromboli.integrations.notion import STATUS_REVIEW
+
+    now = clock or (lambda: datetime.now(UTC))
+
+    def sweep() -> None:
+        cutoff = (now() - timedelta(days=max_age_days)).isoformat(timespec="seconds")
+        for task in index.expired(cutoff):
+            index.resolve(task.task_id, state="expired")
+            if notion is not None:
+                try:
+                    notion.update_task(task.task_id, status=STATUS_REVIEW)
+                except Exception:  # noqa: BLE001 - sweep must not crash on one task
+                    logger.warning("Could not park expired #%s to Review.", task.ref)
+            if cleanup is not None:
+                try:
+                    cleanup(task)
+                except Exception:  # noqa: BLE001
+                    logger.warning("Worktree cleanup failed for #%s.", task.ref)
+            if notify is not None:
+                try:
+                    notify(
+                        f"⏳ #{task.ref} ({task.name or task.task_id}) expired after "
+                        f"{max_age_days}d with no reply → Review."
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("Expiry notice failed for #%s.", task.ref)
+
+    return sweep
+
+
 def make_resumer(phases: Any, index: PausedIndex, *, notion: Any = None) -> Resumer:
     """Build the ``✅`` resume path: apply guidance and re-run the task in place.
 
@@ -298,6 +346,50 @@ def make_resumer(phases: Any, index: PausedIndex, *, notion: Any = None) -> Resu
     return resumer
 
 
+def serve_from_settings(settings: Any) -> None:
+    """Build the full investigate service from settings and run its long-poll loop.
+
+    Wires the investigate-bot (send + long-poll), the Investigator agent, the
+    resume path, the ``/retest`` probe, and the 3-day expiry sweeper. The prober
+    is enabled only when the deps provide a sandbox + worktree resolver.
+    """
+    from stromboli.graph import _deps_from_settings
+    from stromboli.integrations.telegram import telegram_fetcher, telegram_sender
+    from stromboli.llm.investigator import Investigator
+    from stromboli.orchestration.phases import TriagePhases
+
+    token = settings.telegram_investigate_bot_token
+    chat = settings.telegram_chat_id
+    if not (token and chat):
+        raise RuntimeError(
+            "investigate-serve needs TELEGRAM_INVESTIGATE_BOT_TOKEN and "
+            "TELEGRAM_CHAT_ID to be set."
+        )
+
+    index = PausedIndex(Path(settings.workspace_root) / ".stromboli" / "paused.db")
+    deps = _deps_from_settings(settings)
+    assert deps.gateway is not None  # _deps_from_settings always builds it
+    phases = TriagePhases(deps)
+    investigator = Investigator(
+        gateway=deps.gateway, model=settings.reasoning_model, index=index
+    )
+    send = telegram_sender(token, chat)
+    prober = (
+        make_prober(index, deps.sandbox, deps.worktree_for)
+        if deps.sandbox is not None and deps.worktree_for is not None
+        else None
+    )
+    service = InvestigateService(
+        index=index, send=send, authorized_chat_id=str(chat),
+        responder=investigator.respond,
+        resumer=make_resumer(phases, index, notion=deps.notion),
+        prober=prober, notion=deps.notion,
+    )
+    sweep = make_sweeper(index, notion=deps.notion, notify=send)
+    logger.info("investigate-serve listening on strombolli-investigate-bot…")
+    service.serve(telegram_fetcher(token), sweep=sweep)
+
+
 _HELP = (
     "Stromboli investigate loop:\n"
     "• `/queued` — list queued tasks\n"
@@ -316,5 +408,7 @@ __all__ = [
     "Resumer",
     "make_prober",
     "make_resumer",
+    "make_sweeper",
     "parse_command",
+    "serve_from_settings",
 ]

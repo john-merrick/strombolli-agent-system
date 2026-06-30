@@ -13,6 +13,7 @@ from stromboli.orchestration.investigate import (
     Resumer,
     make_prober,
     make_resumer,
+    make_sweeper,
     parse_command,
 )
 from stromboli.orchestration.paused import PausedIndex, PausedTask
@@ -234,6 +235,37 @@ def test_make_resumer_handles_lost_state(tmp_path: Path) -> None:
     resumer = make_resumer(phases, idx)
     ghost = PausedTask(task_id="ghost", ref=9, reason="r", paused_at="x", state="open")
     assert "can't resume" in resumer(ghost, "use X").lower()
+
+
+# -- expiry sweeper --------------------------------------------------------- #
+def test_sweeper_parks_expired_tasks(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    idx = PausedIndex(tmp_path / "p.db")
+    idx.suspend(_state("old"), reason="r", name="Old", paused_at="2020-01-01T00:00:00+00:00")
+    idx.suspend(_state("new"), reason="r", name="New", paused_at="2999-01-01T00:00:00+00:00")
+
+    class _Notion:
+        def __init__(self) -> None:
+            self.writes: list[tuple[str, str | None]] = []
+
+        def update_task(self, page_id: str, *, status: str | None = None) -> None:
+            self.writes.append((page_id, status))
+
+    notion = _Notion()
+    pings: list[str] = []
+    cleaned: list[str] = []
+    sweep = make_sweeper(
+        idx, max_age_days=3, notion=notion, notify=pings.append,
+        cleanup=lambda t: cleaned.append(t.task_id),
+        clock=lambda: datetime(2026, 6, 30, tzinfo=UTC),
+    )
+    sweep()
+    assert idx.by_ref(1) is None  # "old" closed
+    assert idx.get("new") is not None and idx.get("new").state == "open"  # type: ignore[union-attr]
+    assert ("old", "Review") in notion.writes
+    assert cleaned == ["old"]
+    assert pings and "expired" in pings[0]
 
 
 # -- the serve loop --------------------------------------------------------- #

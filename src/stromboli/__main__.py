@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument(
         "--interval", type=float, default=30.0, help="Seconds between polls."
     )
+
+    sub.add_parser(
+        "investigate-serve",
+        help="Run the investigate loop: long-poll the investigate-bot to resolve "
+        "and resume suspended (Queued) tasks via chat.",
+    )
     return parser
 
 
@@ -98,7 +104,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watch":
         return _watch(args.interval)
 
+    if args.command == "investigate-serve":
+        return _investigate_serve()
+
     return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+def _investigate_serve() -> int:
+    """Run the investigate loop service (the bidirectional escalation resolver)."""
+    from stromboli.orchestration.investigate import serve_from_settings
+    from stromboli.settings import load_settings
+
+    serve_from_settings(load_settings())
+    return 0
 
 
 def _watch_once(
