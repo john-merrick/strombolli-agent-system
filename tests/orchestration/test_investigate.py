@@ -154,11 +154,15 @@ def test_drop_parks_to_review(tmp_path: Path) -> None:
 
     notion = _Notion()
     sent: list[str] = []
-    _service(idx, sent, notion=notion).handle(
-        Update(update_id=1, chat_id="42", text="/drop #1")
+    cleaned: list[str] = []
+    svc = InvestigateService(
+        index=idx, send=sent.append, authorized_chat_id="42",
+        notion=notion, cleanup=cleaned.append,
     )
+    svc.handle(Update(update_id=1, chat_id="42", text="/drop #1"))
     assert ("a", "Review") in notion.writes
     assert idx.by_ref(1) is None
+    assert cleaned == ["a"]  # dropped task's worktree freed
     assert "dropped" in sent[-1].lower()
 
 

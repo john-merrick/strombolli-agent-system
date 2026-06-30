@@ -105,6 +105,7 @@ class InvestigateService:
     resumer: Resumer | None = None
     prober: Prober | None = None
     notion: Any = None  # for /drop → Review (optional)
+    cleanup: Callable[[str], None] | None = None  # free the worktree on /drop
 
     # -- inbound ----------------------------------------------------------- #
     def handle(self, update: Update) -> None:
@@ -177,6 +178,11 @@ class InvestigateService:
                 self.notion.update_task(task.task_id, status=STATUS_REVIEW)
             except Exception:  # noqa: BLE001 - status write must not crash the loop
                 logger.warning("Could not park #%s to Review.", task.ref)
+        if self.cleanup is not None:
+            try:
+                self.cleanup(task.task_id)
+            except Exception:  # noqa: BLE001 - cleanup is best-effort
+                logger.warning("Worktree cleanup failed for #%s.", task.ref)
         return f"#{task.ref} dropped → Review."
 
     # -- routing ----------------------------------------------------------- #
@@ -379,13 +385,13 @@ def serve_from_settings(settings: Any) -> None:
         if deps.sandbox is not None and deps.worktree_for is not None
         else None
     )
+    remove_worktree = deps.worktree_cleanup
     service = InvestigateService(
         index=index, send=send, authorized_chat_id=str(chat),
         responder=investigator.respond,
         resumer=make_resumer(phases, index, notion=deps.notion),
-        prober=prober, notion=deps.notion,
+        prober=prober, notion=deps.notion, cleanup=remove_worktree,
     )
-    remove_worktree = deps.worktree_cleanup
     sweep = make_sweeper(
         index, notion=deps.notion, notify=send,
         cleanup=(
