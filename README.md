@@ -183,3 +183,22 @@ its mutable state, on two layers
   validated fix) and retrieved into the **planner's** context at the start of a
   matching future task. Curate-and-compress within, distill-and-retrieve across —
   the closest a frozen model gets to a test-time update.
+
+### Self-improving loops
+
+Four loops build on that foundation
+([`docs/design-self-improving.md`](docs/design-self-improving.md)):
+
+1. **Failure-to-dataset pipeline** — every terminal verdict (pass *and*
+   rejection) is captured to `.stromboli/failures.db`, so the verifier's
+   rejection signal becomes a durable, labellable dataset instead of being
+   discarded.
+2. **GEPA on the verifier** — the judge's prompt is injectable and optimizable
+   against human accept/reject labels; `stromboli optimize-verifier` exports the
+   trainset and scores it. Adoption stays a human decision (`[optimize]` extra).
+3. **Skill library** — a verified pass distils a reusable skill; it's an
+   unvetted *candidate* until an eval A/B (`skill_gate`) promotes it, so only
+   validated skills reach the coder.
+4. **Morning rundown** — `stromboli rundown` clusters unresolved failures by
+   `task_type × failure_mode` and routes each cluster (missing knowledge →
+   memory · judge was wrong → GEPA · structural → a `backlog.md` ticket).
