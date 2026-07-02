@@ -244,3 +244,56 @@ def test_route_after_pr_escalation_goes_to_human() -> None:
         task_id="t", source="cli", raw_request="x", status="escalated"
     )
     assert route_after_pr(failed) == "human"
+
+
+def test_on_terminal_captures_every_run(tmp_path: object) -> None:
+    from stromboli.graph import _capture_terminal
+    from stromboli.state import Verdict
+
+    captured: list[StromboliState] = []
+    deps = GraphDeps(on_terminal=lambda s: captured.append(s))
+    state = StromboliState(
+        task_id="t", source="cli", raw_request="x", status="escalated",
+        verdict=Verdict(decision="revise", reason="no"),
+    )
+    _capture_terminal(state, deps)
+    assert captured and captured[0].task_id == "t"
+
+
+def test_on_terminal_swallows_errors(tmp_path: object) -> None:
+    from stromboli.graph import _capture_terminal
+
+    def boom(_s: object) -> None:
+        raise RuntimeError("db locked")
+
+    deps = GraphDeps(on_terminal=boom)
+    # Must not raise — capture is best-effort.
+    _capture_terminal(
+        StromboliState(task_id="t", source="cli", raw_request="x"), deps
+    )
+
+
+def test_failure_recorder_maps_state(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from stromboli.graph import _failure_recorder, _open_failure_index
+    from stromboli.state import Spec, TestResult, Verdict
+
+    idx = _open_failure_index(Path(str(tmp_path)))
+    rec = _failure_recorder(idx)
+    state = StromboliState(
+        task_id="t9", source="notion", raw_request="do x",
+        spec=Spec(goal="add pagination", acceptance_criteria=["last page"]),
+        code_diff="+def f(): ...",
+        test_results=[TestResult(passed=False, summary="failed", raw="E")],
+        verdict=Verdict(
+            decision="revise", reason="incomplete", task_type="add-endpoint",
+            failure_mode="missing-tests", fix="add the test",
+        ),
+        status="escalated",
+    )
+    rec(state)
+    row = idx.all()[0]
+    assert row.task_id == "t9" and row.failure_mode == "missing-tests"
+    assert row.decision == "revise" and row.resolved is False
+    assert "last page" in row.acceptance_criteria

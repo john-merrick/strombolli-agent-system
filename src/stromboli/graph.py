@@ -138,6 +138,9 @@ class GraphDeps:
     #: Registers an opened PR for the feedback loop (design: PR feedback loop).
     #: ``(state, worktree, pr_url, pr_number) -> None``. ``None`` → not tracked.
     on_published: Any = None
+    #: Records a terminal verdict to the failure store (self-improving §1).
+    #: ``(state) -> None``, called for every terminal run. ``None`` → not captured.
+    on_terminal: Any = None
 
 
 def _wrap(
@@ -436,15 +439,32 @@ def _execute(
     if isinstance(result, dict) and "__interrupt__" in result:
         deps.tracer.tag("escalated")
         deps.tracer.finish()
-        return StromboliState.model_validate(
+        paused = StromboliState.model_validate(
             {k: v for k, v in result.items() if k != "__interrupt__"}
         )
+        _capture_terminal(paused, deps)
+        return paused
 
     deps.tracer.tag(_terminal_tag(result))
     deps.tracer.finish()
     final = StromboliState.model_validate(result)
     _finalize(final, deps)
+    _capture_terminal(final, deps)
     return final
+
+
+def _capture_terminal(state: StromboliState, deps: GraphDeps) -> None:
+    """Record the terminal verdict for learning (self-improving §1), best-effort.
+
+    Fires for *every* terminal run — a verified pass and a rejection alike — so
+    the verifier's rejection signal is captured durably instead of discarded.
+    """
+    if deps.on_terminal is None:
+        return
+    try:
+        deps.on_terminal(state)
+    except Exception as exc:  # noqa: BLE001 - capture must never crash a run
+        logger.warning("Failure capture failed for %s: %s", state.task_id, exc)
 
 
 def _finalize(state: StromboliState, deps: GraphDeps) -> None:
@@ -582,6 +602,8 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
     # Register each opened PR into the feedback-loop index (§ PR feedback loop):
     # CI failures + review comments then drive bounded fix cycles on the sweep.
     pr_index = _open_pr_index(settings.workspace_root)
+    # Capture every terminal verdict for the self-improvement loops (§1).
+    failure_index = _open_failure_index(settings.workspace_root)
     return GraphDeps(
         budgets=config.budgets,
         tracer=tracer,
@@ -604,6 +626,7 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         investigate_notify=investigate_notify,
         worktree_cleanup=worktree_cleanup,
         on_published=_pr_registrar(pr_index),
+        on_terminal=_failure_recorder(failure_index),
     )
 
 
@@ -611,6 +634,52 @@ def _open_pr_index(workspace_root: Path) -> Any:
     from stromboli.orchestration.pr_index import PRIndex
 
     return PRIndex(workspace_root / ".stromboli" / "prs.db")
+
+
+def _open_failure_index(workspace_root: Path) -> Any:
+    from stromboli.orchestration.failure_index import FailureIndex
+
+    return FailureIndex(workspace_root / ".stromboli" / "failures.db")
+
+
+def _failure_recorder(index: Any) -> Any:
+    """Build the ``on_terminal`` seam that captures a run's verdict (§1)."""
+    from datetime import UTC, datetime
+
+    from stromboli.orchestration.failure_index import FailureRecord
+
+    def record(state: StromboliState) -> None:
+        v = state.verdict
+        goal = state.spec.goal if state.spec is not None else state.raw_request
+        criteria = (
+            "\n".join(state.spec.acceptance_criteria) if state.spec is not None else ""
+        )
+        last_test = state.test_results[-1] if state.test_results else None
+        evidence = (
+            f"{last_test.summary}\n{last_test.raw}" if last_test is not None else ""
+        )
+        index.record(
+            FailureRecord(
+                task_id=state.task_id,
+                ts=datetime.now(UTC).isoformat(),
+                goal=goal,
+                decision=v.decision if v is not None else "",
+                outcome=state.status,
+                task_type=v.task_type if v is not None else "",
+                failure_mode=v.failure_mode if v is not None else "",
+                reason=v.reason if v is not None else "",
+                expected=v.expected if v is not None else "",
+                observed=v.observed if v is not None else "",
+                cause=v.cause if v is not None else "",
+                fix=v.fix if v is not None else "",
+                diff=state.code_diff or "",
+                test_evidence=evidence,
+                acceptance_criteria=criteria,
+                resolved=state.status == "done",
+            )
+        )
+
+    return record
 
 
 def _pr_registrar(pr_index: Any) -> Any:
