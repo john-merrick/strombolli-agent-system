@@ -57,8 +57,16 @@ uv sync --extra dev          # install runtime + dev deps
 uv run pytest                # tests
 uv run ruff check .          # lint
 uv run mypy                  # type check (strict)
-python -m stromboli run --task "<text>"   # run one task through the graph
+
+# Run one task through the graph. Secrets in .env are 1Password references —
+# always go through `op run`. --repo (local path or owner/name) is required
+# for CLI-sourced tasks; --dry-run-pr logs the PR intent instead of pushing.
+op run --env-file=.env -- uv run python -m stromboli run \
+  --task "<text>" --repo <path-or-owner/name> --dry-run-pr
 ```
+
+Observability: Langfuse (local, `http://localhost:3100`) is the source of truth
+per task — see `docs/observability.md`.
 
 Each PRD phase ships green (pytest + ruff + mypy --strict) and is committed
 before the next. Tests use injected fakes — no real git, network, Docker, or
