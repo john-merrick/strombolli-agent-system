@@ -314,6 +314,10 @@ SANDBOX_VENV_DIR: Final = ".stromboli-venv"
 DEFAULT_SANDBOX_IMAGE: Final = "stromboli-sandbox:latest"
 #: Cap on captured test output so a runaway log never blows up the state object.
 _MAX_OUTPUT_CHARS: Final = 20_000
+#: How many finished sandbox containers to keep for post-hoc inspection
+#: (``docker logs``); older ones are pruned after each run so 24/7 autonomous
+#: operation doesn't accumulate one dead container per task forever.
+DEFAULT_CONTAINER_RETAIN: Final = 20
 
 #: Runs ``argv`` with ``cwd`` and returns ``(exit_code, combined_output)``.
 CommandRunner = Callable[[Sequence[str], Path], tuple[int, str]]
@@ -367,10 +371,13 @@ class SandboxRunner:
         image: str = DEFAULT_SANDBOX_IMAGE,
         run: CommandRunner | None = None,
         use_docker: bool = True,
+        retain: int = DEFAULT_CONTAINER_RETAIN,
     ) -> None:
         self._image = image
         self._run = run or _subprocess_runner
         self._use_docker = use_docker
+        #: Keep the newest ``retain`` finished sandbox containers; prune the rest.
+        self._retain = max(0, retain)
 
     def _container_name(self, worktree_path: Path) -> str:
         """A deterministic, inspectable container name per worktree."""
@@ -448,6 +455,29 @@ class SandboxRunner:
             return None
         return venv_python
 
+    def _prune_containers(self, cwd: Path) -> None:
+        """Keep the newest ``self._retain`` sandbox containers, remove the rest.
+
+        The test-run container is intentionally not ``--rm`` (a finished run
+        stays inspectable via ``docker logs``), but each task gets a uniquely
+        named container, so without pruning they accumulate one-per-task
+        forever. ``docker ps -a`` lists newest first, so the tail past the
+        retention window is the stale set. Best-effort — never fails a build.
+        """
+        try:
+            exit_code, out = self._run(
+                ["docker", "ps", "-aq", "--filter", "label=stromboli=sandbox"], cwd
+            )
+            if exit_code != 0:
+                return
+            ids = out.split()
+            stale = ids[self._retain:]
+            if stale:
+                self._run(["docker", "rm", "-f", *stale], cwd)
+                logger.info("Pruned %d old sandbox container(s)", len(stale))
+        except Exception as exc:  # noqa: BLE001 - cleanup must never fail a run
+            logger.warning("Sandbox container prune failed: %s", exc)
+
     def run_tests(
         self,
         worktree_path: str | Path,
@@ -470,6 +500,9 @@ class SandboxRunner:
             argv = list(command)
         logger.info("Sandbox: %s", " ".join(argv))
         exit_code, output = self._run(argv, path)
+        # Bound the finished-container backlog (retain the newest for inspection).
+        if self._use_docker:
+            self._prune_containers(path)
         # pytest exit 5 = "no tests collected" — not a failure of the change
         # itself; the verifier judges coverage. Treat 0 and 5 as passing.
         passed = exit_code in (0, 5)
@@ -483,6 +516,7 @@ class SandboxRunner:
 __all__ = [
     "BRANCH_PREFIX",
     "DEFAULT_BASE_BRANCH",
+    "DEFAULT_CONTAINER_RETAIN",
     "DEFAULT_SANDBOX_IMAGE",
     "DEFAULT_TEST_COMMAND",
     "CommandRunner",

@@ -67,8 +67,7 @@ def test_sandbox_run_passes() -> None:
     assert result.exit_code == 0
     # A stale container is cleared first, then a named/labelled (visible) run.
     assert calls[0][:3] == ["docker", "rm", "-f"]
-    argv = calls[-1]
-    assert argv[:2] == ["docker", "run"]
+    argv = next(c for c in calls if c[:2] == ["docker", "run"])
     assert "--name" in argv and "--label" in argv
     assert "--rm" not in argv  # kept for inspection (docker ps -a)
     assert "none" in argv  # --network none
@@ -151,7 +150,9 @@ def test_sandbox_bootstraps_deps_when_manifest_exists(tmp_path: Path) -> None:
     assert "uv venv .stromboli-venv" in prep[-1]
     assert "-r requirements.txt" in prep[-1]
     # The test run itself uses the venv python — offline.
-    test_run = calls[-1]
+    test_run = next(
+        c for c in calls if c[:2] == ["docker", "run"] and "none" in c
+    )
     assert "--network" in test_run and "none" in test_run
     assert ".stromboli-venv/bin/python" in test_run
 
@@ -182,7 +183,10 @@ def test_sandbox_falls_back_when_bootstrap_fails(tmp_path: Path) -> None:
     result = runner.run_tests(tmp_path)
     # Install failure degrades to the bare image python (the old behavior).
     assert result.passed
-    assert "python" in calls[-1] and ".stromboli-venv/bin/python" not in calls[-1]
+    test_run = next(
+        c for c in calls if c[:2] == ["docker", "run"] and "none" in c
+    )
+    assert "python" in test_run and ".stromboli-venv/bin/python" not in test_run
 
 
 def test_ensure_from_branch_checks_out_remote_branch(tmp_path: Path) -> None:
@@ -195,3 +199,48 @@ def test_ensure_from_branch_checks_out_remote_branch(tmp_path: Path) -> None:
     assert any("fetch origin stromboli/t1-x" in j for j in joined)
     assert any("worktree add -B stromboli/t1-x" in j and "origin/stromboli/t1-x" in j
                for j in joined)
+
+
+def test_sandbox_prunes_old_containers_beyond_retention() -> None:
+    calls: list[list[str]] = []
+    # Five labelled containers exist; retain=2 → the 3 oldest are removed.
+    ids = "c1\nc2\nc3\nc4\nc5"
+
+    def fake_run(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
+        calls.append(list(argv))
+        if argv[:3] == ["docker", "ps", "-aq"]:
+            return 0, ids
+        return 0, "1 passed"
+
+    runner = SandboxRunner(run=fake_run, use_docker=True, retain=2)
+    runner.run_tests("/tmp/wt", ("pytest", "-q"))
+    rm = next(c for c in calls if c[:3] == ["docker", "rm", "-f"] and "c3" in c)
+    # docker ps -a lists newest first → keep c1,c2; remove the tail c3,c4,c5.
+    assert rm == ["docker", "rm", "-f", "c3", "c4", "c5"]
+
+
+def test_sandbox_prune_noop_within_retention() -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
+        calls.append(list(argv))
+        if argv[:3] == ["docker", "ps", "-aq"]:
+            return 0, "c1\nc2"
+        return 0, "1 passed"
+
+    runner = SandboxRunner(run=fake_run, use_docker=True, retain=20)
+    runner.run_tests("/tmp/wt", ("pytest", "-q"))
+    # Only the pre-run rm -f <name>; no prune rm because 2 <= retain.
+    prune_rms = [c for c in calls if c[:3] == ["docker", "rm", "-f"] and "c1" in c]
+    assert prune_rms == []
+
+
+def test_sandbox_no_prune_without_docker() -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
+        calls.append(list(argv))
+        return 0, "ok"
+
+    SandboxRunner(run=fake_run, use_docker=False).run_tests("/tmp/wt", ("make", "t"))
+    assert not any(c[:3] == ["docker", "ps", "-aq"] for c in calls)
