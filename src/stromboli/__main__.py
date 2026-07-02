@@ -95,6 +95,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--export-only", action="store_true",
         help="Only export failures.db → the labelled dataset JSON; skip scoring.",
     )
+
+    rundown = sub.add_parser(
+        "rundown",
+        help="Cluster unresolved failures into an improvement backlog and route "
+        "each cluster (memory / GEPA / ticket); self-improving §4.",
+    )
+    rundown.add_argument(
+        "--notify", action="store_true",
+        help="Also push the digest to Telegram (default: print only).",
+    )
     return parser
 
 
@@ -141,7 +151,40 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "optimize-verifier":
         return _optimize_verifier(export_only=args.export_only)
 
+    if args.command == "rundown":
+        return _rundown(notify=args.notify)
+
     return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+def _rundown(*, notify: bool) -> int:
+    """Cluster unresolved failures into a routed improvement backlog (§4)."""
+    from stromboli.graph import _open_failure_index
+    from stromboli.orchestration.rundown import (
+        cluster_failures,
+        format_backlog,
+        format_digest,
+    )
+    from stromboli.settings import load_settings
+
+    settings = load_settings()
+    index = _open_failure_index(settings.workspace_root)
+    clusters = cluster_failures(index.unresolved())
+    digest = format_digest(clusters)
+    print(digest)
+
+    backlog_path = settings.workspace_root / ".stromboli" / "backlog.md"
+    backlog_path.write_text(format_backlog(clusters))
+    print(f"\nBacklog written → {backlog_path}")
+
+    if notify:
+        from stromboli.integrations.telegram import make_notifier
+
+        notifier = make_notifier(
+            settings.telegram_bot_token, settings.telegram_chat_id
+        )
+        notifier.notify(digest)
+    return 0
 
 
 def _investigate_serve() -> int:
