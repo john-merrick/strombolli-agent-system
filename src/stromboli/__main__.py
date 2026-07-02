@@ -154,9 +154,17 @@ def _watch_once(
     Returns the tasks dispatched this pass. Factored out of the loop so it's
     unit-testable. The Notion status guard prevents re-dispatch across passes;
     ``seen`` guards against double-notifying a task that lingers as To-do.
+
+    ``seen`` is pruned to the tasks the query still returns: once a task
+    leaves the Ready queue (built / escalated) it is *forgotten*, so a task the
+    human fixes and re-ticks Ready is picked up again — the whole autonomous
+    loop, not just a task's first appearance. (A long-lived ``seen`` silently
+    ignored every re-queued task until the watcher was restarted.)
     """
     dispatched: list[Any] = []
-    for task in notion.query_ready_tasks(db_id):
+    ready = notion.query_ready_tasks(db_id)
+    seen.intersection_update({t.page_id for t in ready})
+    for task in ready:
         if task.page_id in seen:
             continue
         seen.add(task.page_id)

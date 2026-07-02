@@ -96,3 +96,38 @@ def test_poll_with_no_ready_tasks(monkeypatch: pytest.MonkeyPatch) -> None:
         "stromboli.integrations.notion.NotionTaskClient", FakeNotionClient
     )
     assert cli._poll() == 0
+
+
+def test_watch_once_redispatches_a_requeued_task() -> None:
+    """A task that leaves the Ready queue (built/escalated) and later returns
+    (human fixed it, re-ticked Ready) must be dispatched again — a permanent
+    `seen` set silently ignored every re-queue until a watcher restart."""
+    ran: list[str] = []
+
+    class _Notion:
+        def __init__(self) -> None:
+            self.queue: list[Any] = [make_task(page_id="pg-1")]
+
+        def query_ready_tasks(self, db_id: str) -> list[Any]:
+            return list(self.queue)
+
+    class _Notifier:
+        def notify(self, text: str) -> None:
+            pass
+
+    notion = _Notion()
+    seen: set[str] = set()
+    kwargs = dict(run=lambda t: ran.append(t.page_id), now=lambda: "t0")
+
+    cli._watch_once(notion, "db", _Notifier(), seen, **kwargs)
+    assert ran == ["pg-1"]
+
+    # Task built → leaves the Ready queue → forgotten.
+    notion.queue = []
+    cli._watch_once(notion, "db", _Notifier(), seen, **kwargs)
+    assert seen == set()
+
+    # Human re-queues it → dispatched again.
+    notion.queue = [make_task(page_id="pg-1")]
+    cli._watch_once(notion, "db", _Notifier(), seen, **kwargs)
+    assert ran == ["pg-1", "pg-1"]

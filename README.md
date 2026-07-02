@@ -95,6 +95,32 @@ human review (no auto-merge), writes a feedback summary + `Review` status back t
 the task, and pings Telegram. A CLI-sourced task gets the same clone-per-task
 worktree from `--repo` and skips all Notion write-backs.
 
+## Autonomous operation (always-on)
+
+Two launchd agents make the loop hands-off — add a task in Notion, assign the
+Agent, tick **Ready**, and it builds with no prompting:
+
+- `com.stromboli.watch` — `stromboli watch` under `caffeinate` (sleep can't
+  stall a run): polls the task db every 30s and builds each Ready task
+  serially. A task that escalates and is later fixed + re-ticked Ready is
+  picked up again (the watcher forgets tasks once they leave the queue).
+- `com.stromboli.investigate` — `stromboli investigate-serve`: escalations
+  become a Telegram conversation on the investigate bot; answer its question,
+  `#N <guidance>` / `/retest` / `/drop`, and the task resumes its coding
+  session rather than starting cold.
+
+Both plists live in `~/Library/LaunchAgents/` (RunAtLoad + KeepAlive: they
+start at login and restart on crash). Manage with:
+
+```bash
+launchctl kickstart -k gui/$UID/com.stromboli.watch    # restart (e.g. after a code change)
+launchctl bootout   gui/$UID/com.stromboli.watch       # stop
+tail -f <WORKSPACE_ROOT>/.stromboli/watch.launchd.log  # logs
+```
+
+**Restart the services after changing the code or `.env`** — they load both at
+startup.
+
 ## Configuration
 
 All configuration is environment-backed (optionally via a local `.env`; see
