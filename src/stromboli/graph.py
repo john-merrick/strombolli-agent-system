@@ -135,6 +135,9 @@ class GraphDeps:
     #: None]`` keyed by task_id. ``None`` → no cleanup (tests/offline). Not called
     #: on suspend, so the worktree survives for resume/probe.
     worktree_cleanup: Any = None
+    #: Registers an opened PR for the feedback loop (design: PR feedback loop).
+    #: ``(state, worktree, pr_url, pr_number) -> None``. ``None`` → not tracked.
+    on_published: Any = None
 
 
 def _wrap(
@@ -248,6 +251,7 @@ def build_graph(
                 base=deps.base_branch,
                 dry_run=deps.dry_run_pr,
                 git_run=deps.git_run,
+                on_published=deps.on_published,
             ),
         ),
     )
@@ -568,6 +572,10 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         max_turns=config.budgets.max_inner_turns,
         on_turn=_log_coder_turn,
     )
+    github = GitHubClient(settings.github_token)
+    # Register each opened PR into the feedback-loop index (§ PR feedback loop):
+    # CI failures + review comments then drive bounded fix cycles on the sweep.
+    pr_index = _open_pr_index(settings.workspace_root)
     return GraphDeps(
         budgets=config.budgets,
         tracer=tracer,
@@ -582,14 +590,45 @@ def _deps_from_settings(settings: Settings) -> GraphDeps:
         workspace_root=settings.workspace_root,
         coder=coder,
         sandbox=SandboxRunner(),
-        github=GitHubClient(settings.github_token),
+        github=github,
         base_branch="main",
         dry_run_pr=False,
         worktree_for=worktree_for,
         paused_index=paused_index,
         investigate_notify=investigate_notify,
         worktree_cleanup=worktree_cleanup,
+        on_published=_pr_registrar(pr_index),
     )
+
+
+def _open_pr_index(workspace_root: Path) -> Any:
+    from stromboli.orchestration.pr_index import PRIndex
+
+    return PRIndex(workspace_root / ".stromboli" / "prs.db")
+
+
+def _pr_registrar(pr_index: Any) -> Any:
+    """Build the ``on_published`` seam that records an opened PR to watch."""
+    from datetime import UTC, datetime
+
+    from stromboli.orchestration.pr_index import PRWatch
+
+    def register(state: StromboliState, worktree: Any, pr_url: str, number: int) -> None:
+        goal = state.spec.goal if state.spec is not None else state.raw_request
+        pr_index.register(
+            PRWatch(
+                task_id=state.task_id,
+                repo=worktree.repo.full_name,
+                branch=worktree.branch,
+                pr_number=number,
+                pr_url=pr_url,
+                goal=goal,
+                session_id=state.session_id,
+            ),
+            now=datetime.now(UTC).isoformat(),
+        )
+
+    return register
 
 
 def _terminal_tag(result: Any | None) -> str:

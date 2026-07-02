@@ -183,3 +183,15 @@ def test_sandbox_falls_back_when_bootstrap_fails(tmp_path: Path) -> None:
     # Install failure degrades to the bare image python (the old behavior).
     assert result.passed
     assert "python" in calls[-1] and ".stromboli-venv/bin/python" not in calls[-1]
+
+
+def test_ensure_from_branch_checks_out_remote_branch(tmp_path: Path) -> None:
+    cmds: list[list[str]] = []
+    manager = WorktreeManager(tmp_path, run=lambda a: cmds.append(list(a)))
+    wt = manager.ensure_from_branch(Repo("o", "r"), "t1", "do x", "stromboli/t1-x")
+    assert wt.branch == "stromboli/t1-x"
+    joined = [" ".join(c) for c in cmds]
+    # Fetches the branch and adds a worktree tracking origin/<branch>.
+    assert any("fetch origin stromboli/t1-x" in j for j in joined)
+    assert any("worktree add -B stromboli/t1-x" in j and "origin/stromboli/t1-x" in j
+               for j in joined)

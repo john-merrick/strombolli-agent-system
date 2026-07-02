@@ -103,7 +103,8 @@ Agent, tick **Ready**, and it builds with no prompting:
 - `com.stromboli.watch` — `stromboli watch` under `caffeinate` (sleep can't
   stall a run): polls the task db every 30s and builds each Ready task
   serially. A task that escalates and is later fixed + re-ticked Ready is
-  picked up again (the watcher forgets tasks once they leave the queue).
+  picked up again (the watcher forgets tasks once they leave the queue). The
+  same daemon runs the **PR feedback loop** (below) every 4th pass.
 - `com.stromboli.investigate` — `stromboli investigate-serve`: escalations
   become a Telegram conversation on the investigate bot; answer its question,
   `#N <guidance>` / `/retest` / `/drop`, and the task resumes its coding
@@ -120,6 +121,22 @@ tail -f <WORKSPACE_ROOT>/.stromboli/watch.launchd.log  # logs
 
 **Restart the services after changing the code or `.env`** — they load both at
 startup.
+
+### The PR feedback loop (an opened PR is a checkpoint, not the finish line)
+
+Once Stromboli opens a PR it keeps watching it (index at
+`<WORKSPACE_ROOT>/.stromboli/prs.db`). On the watcher's PR sweep, for each open
+Stromboli PR:
+
+- **Failing CI** (a head SHA it hasn't acted on) → a bounded fix cycle: resume
+  the coder's session with the CI failure logs, re-run the sandbox, re-verify
+  with Gemini, push to the same branch.
+- **New human review comments** → same fix cycle, comments injected as reviewer
+  feedback. A comment containing `stromboli: skip` opts the PR out; Stromboli's
+  own comments (prefixed `🌋 stromboli:`) are ignored.
+- Bounded at **2 fix rounds** per PR; after that it escalates (PR comment +
+  Notion `Review` + Telegram). **Merging is always yours** — the loop never
+  merges. See [`docs/design-pr-feedback-loop.md`](docs/design-pr-feedback-loop.md).
 
 ## Configuration
 

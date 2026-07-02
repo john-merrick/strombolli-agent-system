@@ -199,6 +199,19 @@ def _watch(interval: float) -> int:
     def _run(task: Any) -> None:
         run_task("", source="notion", task_id=task.page_id, settings=settings)
 
+    # The PR feedback loop shares this daemon: an opened PR is a checkpoint, so
+    # every few passes we sweep Stromboli's open PRs and fix CI/comment feedback
+    # (built lazily so a watcher without GitHub config still runs the Notion
+    # drain). See docs/design-pr-feedback-loop.md.
+    from stromboli.orchestration.pr_feedback import build_from_settings
+
+    try:
+        pr_feedback = build_from_settings(settings)
+    except Exception:  # noqa: BLE001 - the Notion drain must still run
+        log.exception("PR feedback loop unavailable; running Notion drain only.")
+        pr_feedback = None
+
+    pass_n = 0
     while True:
         try:
             done = _watch_once(
@@ -207,11 +220,18 @@ def _watch(interval: float) -> int:
             )
             if done:
                 log.info("Dispatched %d task(s).", len(done))
+            # Sweep PRs every 4th pass (~2 min at the default 30s interval) so a
+            # burst of Notion work doesn't starve PR follow-up, and vice versa.
+            if pr_feedback is not None and pass_n % 4 == 0:
+                acted = pr_feedback.sweep()
+                if acted:
+                    log.info("PR feedback acted on %d PR(s): %s", len(acted), acted)
         except KeyboardInterrupt:  # pragma: no cover
             log.info("Watcher stopped.")
             return 0
         except Exception:  # noqa: BLE001 - a poll error must not kill the loop
             log.exception("Poll failed; retrying next interval.")
+        pass_n += 1
         time.sleep(interval)
 
 

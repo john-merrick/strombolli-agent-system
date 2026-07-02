@@ -70,6 +70,36 @@ class PullRequest:
 
 
 @dataclass(frozen=True)
+class PullRequestState:
+    """A watched PR's live state for the feedback loop (§ PR feedback design)."""
+
+    number: int
+    head_sha: str
+    #: ``open`` | ``closed``; ``merged`` is ``closed`` + ``merged=True``.
+    state: str
+    merged: bool
+
+
+@dataclass(frozen=True)
+class CheckSummary:
+    """The aggregate CI verdict for a PR's head SHA."""
+
+    #: ``success`` | ``failure`` | ``pending`` | ``none`` (no checks configured).
+    conclusion: str
+    #: Names of the failing check runs (for the fix prompt).
+    failing: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Comment:
+    """A PR issue/review comment (for the reviewer-feedback signal)."""
+
+    body: str
+    created_at: str
+    author: str
+
+
+@dataclass(frozen=True)
 class PublishResult:
     """Outcome of :func:`publish_pr`."""
 
@@ -77,6 +107,8 @@ class PublishResult:
     pr_url: str | None
     #: True when the branch had no changes, so no PR was opened.
     empty_diff: bool
+    #: The opened PR's number (for the feedback loop), or ``None``.
+    pr_number: int | None = None
 
 
 class GitHubGateway(Protocol):
@@ -85,6 +117,22 @@ class GitHubGateway(Protocol):
     def open_pull_request(
         self, repo: Any, *, head: str, base: str, title: str, body: str
     ) -> PullRequest: ...
+
+
+class PRFeedbackGateway(Protocol):
+    """The GitHub surface the PR feedback loop reads/writes (§ design)."""
+
+    def get_pull_request(self, repo: Any, number: int) -> PullRequestState: ...
+
+    def check_summary(self, repo: Any, sha: str) -> CheckSummary: ...
+
+    def failing_logs(self, repo: Any, sha: str) -> str: ...
+
+    def list_comments(self, repo: Any, number: int, *, since: str | None) -> list[
+        Comment
+    ]: ...
+
+    def add_comment(self, repo: Any, number: int, body: str) -> None: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +214,105 @@ class GitHubClient:
             pr = items[0]
             return PullRequest(url=pr["html_url"], number=int(pr["number"]))
         return None
+
+    # -- PR feedback loop (§ design) --------------------------------------- #
+
+    def get_pull_request(self, repo: Any, number: int) -> PullRequestState:
+        """The live open/closed/merged state + head SHA of a PR."""
+        resp = self._client.get(
+            f"/repos/{repo.full_name}/pulls/{number}", headers=self._headers
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return PullRequestState(
+            number=number,
+            head_sha=str(data["head"]["sha"]),
+            state=str(data["state"]),
+            merged=bool(data.get("merged")),
+        )
+
+    def check_summary(self, repo: Any, sha: str) -> CheckSummary:
+        """Aggregate the check-runs for ``sha`` into one CI verdict.
+
+        ``none`` when the repo has no checks configured; ``pending`` while any
+        run is unfinished; ``failure`` if any completed run did not succeed;
+        else ``success``.
+        """
+        resp = self._client.get(
+            f"/repos/{repo.full_name}/commits/{sha}/check-runs", headers=self._headers
+        )
+        if resp.status_code != 200:
+            return CheckSummary(conclusion="none")
+        runs = resp.json().get("check_runs", [])
+        if not runs:
+            return CheckSummary(conclusion="none")
+        if any(r.get("status") != "completed" for r in runs):
+            return CheckSummary(conclusion="pending")
+        failing = tuple(
+            str(r.get("name", "check"))
+            for r in runs
+            if r.get("conclusion") not in ("success", "neutral", "skipped")
+        )
+        return CheckSummary(
+            conclusion="failure" if failing else "success", failing=failing
+        )
+
+    def failing_logs(self, repo: Any, sha: str) -> str:
+        """Best-effort text of what failed for ``sha`` — check-run outputs.
+
+        Uses the check-run ``output`` (title/summary/annotations), which needs
+        no extra scopes; full Actions job logs would require ``actions:read``.
+        Returns "" when nothing legible is available.
+        """
+        resp = self._client.get(
+            f"/repos/{repo.full_name}/commits/{sha}/check-runs", headers=self._headers
+        )
+        if resp.status_code != 200:
+            return ""
+        parts: list[str] = []
+        for run in resp.json().get("check_runs", []):
+            if run.get("conclusion") in ("success", "neutral", "skipped", None):
+                continue
+            out = run.get("output") or {}
+            chunk = "\n".join(
+                str(x) for x in (out.get("title"), out.get("summary"), out.get("text"))
+                if x
+            )
+            if chunk:
+                parts.append(f"### {run.get('name', 'check')}\n{chunk}")
+        return "\n\n".join(parts)[:6000]
+
+    def list_comments(
+        self, repo: Any, number: int, *, since: str | None
+    ) -> list[Comment]:
+        """Issue comments on the PR after ``since`` (ISO), oldest first."""
+        params: dict[str, Any] = {"sort": "created", "direction": "asc"}
+        if since:
+            params["since"] = since
+        resp = self._client.get(
+            f"/repos/{repo.full_name}/issues/{number}/comments",
+            headers=self._headers,
+            params=params,
+        )
+        if resp.status_code != 200:
+            return []
+        return [
+            Comment(
+                body=str(c.get("body", "")),
+                created_at=str(c.get("created_at", "")),
+                author=str((c.get("user") or {}).get("login", "")),
+            )
+            for c in resp.json()
+        ]
+
+    def add_comment(self, repo: Any, number: int, body: str) -> None:
+        """Post a comment on the PR (best-effort status write-back)."""
+        resp = self._client.post(
+            f"/repos/{repo.full_name}/issues/{number}/comments",
+            headers=self._headers,
+            json={"body": body},
+        )
+        resp.raise_for_status()
 
 
 # --------------------------------------------------------------------------- #
@@ -253,16 +400,20 @@ def publish_pr(
     logger.info("Opened PR %s for task %s", pr.url, task.page_id)
     if notion is not None:  # a CLI task has no page to write the URL back to
         notion.update_task(task.page_id, pr_url=pr.url)
-    return PublishResult(pr_url=pr.url, empty_diff=False)
+    return PublishResult(pr_url=pr.url, empty_diff=False, pr_number=pr.number)
 
 
 __all__ = [
     "DEFAULT_BASE_BRANCH",
+    "CheckSummary",
+    "Comment",
     "GitCommandError",
     "GitHubClient",
     "GitHubGateway",
     "GitRunner",
+    "PRFeedbackGateway",
     "PullRequest",
+    "PullRequestState",
     "PublishResult",
     "branch_has_changes",
     "commit_and_push",

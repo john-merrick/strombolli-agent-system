@@ -253,6 +253,31 @@ class WorktreeManager:
         )
         return Worktree(path=wt_path, branch=branch, repo=repo, clone_path=clone)
 
+    def ensure_from_branch(
+        self, repo: Repo, task_id: str, task_name: str, branch: str
+    ) -> Worktree:
+        """Ensure a worktree checked out on an **existing remote** ``branch``.
+
+        Used by the PR feedback loop: the PR's branch on origin is the source of
+        truth (it may carry the operator's commits), so we fetch and check it
+        out rather than resetting to base. Reuses an existing local worktree on
+        the same branch (fast path for a second fix round).
+        """
+        clone = self.ensure_clone(repo)
+        self._run(["-C", str(clone), "fetch", "origin", branch])
+        wt_path = self._worktree_path(repo, task_id, task_name)
+        if (wt_path / ".git").exists():
+            self._run(["-C", str(wt_path), "checkout", branch])
+            self._run(["-C", str(wt_path), "reset", "--hard", f"origin/{branch}"])
+            return Worktree(path=wt_path, branch=branch, repo=repo, clone_path=clone)
+        wt_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Adding worktree %s tracking origin/%s", wt_path, branch)
+        self._run(
+            ["-C", str(clone), "worktree", "add", "-B", branch, str(wt_path),
+             f"origin/{branch}"]
+        )
+        return Worktree(path=wt_path, branch=branch, repo=repo, clone_path=clone)
+
     def remove(self, repo: Repo, task_id: str, task_name: str) -> None:
         """Tear down a task's durable worktree (terminal outcome / expiry cleanup)."""
         clone = self._clone_path(repo)

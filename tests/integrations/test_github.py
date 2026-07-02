@@ -128,3 +128,57 @@ def test_publish_pr_opens_and_writes_back() -> None:
     assert result.pr_url == "https://github.com/o/r/pull/3"
     assert opened["head"] == "stromboli/page-1-add-a-flag"
     assert written["pr_url"] == "https://github.com/o/r/pull/3"
+
+
+def test_check_summary_aggregates_runs() -> None:
+    import httpx
+
+    from stromboli.integrations.github import GitHubClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"check_runs": [
+            {"name": "test", "status": "completed", "conclusion": "success"},
+            {"name": "lint", "status": "completed", "conclusion": "failure"},
+        ]})
+
+    gh = GitHubClient("tok", client=httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.github.com"))
+    summary = gh.check_summary(Repo("o", "r"), "sha1")
+    assert summary.conclusion == "failure" and summary.failing == ("lint",)
+
+
+def test_check_summary_pending_and_none() -> None:
+    import httpx
+
+    from stromboli.integrations.github import GitHubClient
+
+    def pending(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"check_runs": [
+            {"name": "t", "status": "in_progress", "conclusion": None}]})
+
+    def empty(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"check_runs": []})
+
+    def mk(h: Any) -> GitHubClient:
+        return GitHubClient("t", client=httpx.Client(
+            transport=httpx.MockTransport(h), base_url="https://api.github.com"))
+
+    assert mk(pending).check_summary(Repo("o", "r"), "s").conclusion == "pending"
+    assert mk(empty).check_summary(Repo("o", "r"), "s").conclusion == "none"
+
+
+def test_list_comments_maps_fields() -> None:
+    import httpx
+
+    from stromboli.integrations.github import GitHubClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[
+            {"body": "fix the naming", "created_at": "2026-07-02T00:00:00Z",
+             "user": {"login": "isaac"}}])
+
+    gh = GitHubClient("tok", client=httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.github.com"))
+    comments = gh.list_comments(Repo("o", "r"), 5, since=None)
+    assert len(comments) == 1
+    assert comments[0].author == "isaac" and "naming" in comments[0].body
