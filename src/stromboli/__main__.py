@@ -85,6 +85,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the investigate loop: long-poll the investigate-bot to resolve "
         "and resume suspended (Queued) tasks via chat.",
     )
+
+    optv = sub.add_parser(
+        "optimize-verifier",
+        help="Export the labelled failure dataset and score the current verifier "
+        "prompt against it (GEPA scaffold; self-improving §2).",
+    )
+    optv.add_argument(
+        "--export-only", action="store_true",
+        help="Only export failures.db → the labelled dataset JSON; skip scoring.",
+    )
     return parser
 
 
@@ -128,6 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "investigate-serve":
         return _investigate_serve()
 
+    if args.command == "optimize-verifier":
+        return _optimize_verifier(export_only=args.export_only)
+
     return 2  # pragma: no cover - argparse enforces a valid subcommand
 
 
@@ -137,6 +150,44 @@ def _investigate_serve() -> int:
     from stromboli.settings import load_settings
 
     serve_from_settings(load_settings())
+    return 0
+
+
+def _optimize_verifier(*, export_only: bool) -> int:
+    """Export the labelled failure dataset and score the current verifier prompt.
+
+    The GEPA scaffold (self-improving §2): builds the trainset from human-
+    labelled failures and reports the current judge's agreement. Candidate
+    generation (DSPy) needs the ``optimize`` extra and enough labelled volume;
+    adoption is always a human decision, never automatic.
+    """
+    from stromboli.graph import _open_failure_index
+    from stromboli.settings import load_settings
+
+    settings = load_settings()
+    index = _open_failure_index(settings.workspace_root)
+    out = settings.workspace_root / ".stromboli" / "verifier_labelled.json"
+    n = index.export_verifier_dataset(out)
+    print(f"Exported {n} labelled case(s) → {out}")
+    if export_only:
+        return 0
+    if n == 0:
+        print("No labelled cases yet — label verifier decisions first "
+              "(accept/reject) to build the trainset.")
+        return 0
+    from stromboli.llm.gateway import build_gateway
+    from stromboli.nodes.verifier import DEFAULT_VERIFIER_SYSTEM
+    from stromboli.observability.evals.verifier_optimize import evaluate_prompt
+
+    gateway = build_gateway(
+        base_url=settings.litellm_base_url, api_key=settings.litellm_api_key
+    )
+    score = evaluate_prompt(
+        gateway, settings.verifier_model, DEFAULT_VERIFIER_SYSTEM, dataset_path=out
+    )
+    print(f"Current verifier prompt agreement on labelled set: {score:.2f}")
+    print("To optimize: install the 'optimize' extra and run GEPA over this set; "
+          "adopt a candidate only if it strictly beats this score.")
     return 0
 
 

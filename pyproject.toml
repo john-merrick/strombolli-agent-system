@@ -27,6 +27,11 @@ dev = [
 orchestration = [
     "prefect>=3",
 ]
+# GEPA/DSPy verifier prompt optimization (self-improving §2). Offline only —
+# the runtime graph never imports DSPy; verifier_optimize loads it lazily.
+optimize = [
+    "dspy-ai>=2.5",
+]
 
 [build-system]
 requires = ["hatchling"]

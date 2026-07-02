@@ -15,6 +15,8 @@ With no gateway it falls back to a stub ``pass`` so the graph flows offline.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from stromboli.llm.gateway import Gateway, GatewayError, usage_tokens
 from stromboli.nodes.intake import Node
@@ -22,7 +24,12 @@ from stromboli.state import StromboliState, TestResult, Verdict
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = (
+#: The verifier's system prompt — the judge, the highest-leverage prompt. Kept
+#: as a module constant *and* an injectable parameter of :func:`make_verifier`
+#: so the GEPA/DSPy optimizer (self-improving §2) can propose a replacement,
+#: validate it against the labelled dataset, and adopt it without touching the
+#: LangGraph orchestration.
+DEFAULT_VERIFIER_SYSTEM = (
     "You are an independent code reviewer for an autonomous coding system. You "
     "did NOT write this code. Judge the diff against the SPEC INTENT, not merely "
     "whether tests are green: decide whether the change actually satisfies every "
@@ -53,8 +60,29 @@ def _render_tests(results: list[TestResult]) -> str:
     return f"Latest sandbox test run: {status}\n{last.summary}\n{last.raw}"
 
 
-def make_verifier(gateway: Gateway | None = None, *, model: str | None = None) -> Node:
-    """Build the verifier node. With no ``gateway`` it returns a stub pass."""
+def _verifier_user(
+    goal: str, criteria: str, diff: str, test_evidence: str
+) -> str:
+    """The verifier's user message — shared by the node and the eval predictor."""
+    return (
+        f"# Goal\n{goal}\n\n"
+        f"# Acceptance criteria\n{criteria or '(none specified)'}\n\n"
+        f"# Diff under review\n{diff or '(empty diff)'}\n\n"
+        f"# Test evidence\n{test_evidence}"
+    )
+
+
+def make_verifier(
+    gateway: Gateway | None = None,
+    *,
+    model: str | None = None,
+    system_prompt: str = DEFAULT_VERIFIER_SYSTEM,
+) -> Node:
+    """Build the verifier node. With no ``gateway`` it returns a stub pass.
+
+    ``system_prompt`` is injectable so an optimized judge prompt (self-improving
+    §2) can be adopted without any orchestration change.
+    """
 
     def verifier(state: StromboliState) -> dict[str, object]:
         if gateway is None or model is None:
@@ -67,15 +95,15 @@ def make_verifier(gateway: Gateway | None = None, *, model: str | None = None) -
 
         spec = state.spec
         criteria = "\n".join(f"- {c}" for c in spec.acceptance_criteria) if spec else ""
-        user = (
-            f"# Goal\n{spec.goal if spec else state.raw_request}\n\n"
-            f"# Acceptance criteria\n{criteria or '(none specified)'}\n\n"
-            f"# Diff under review\n{state.code_diff or '(empty diff)'}\n\n"
-            f"# Test evidence\n{_render_tests(state.test_results)}"
+        user = _verifier_user(
+            spec.goal if spec else state.raw_request,
+            criteria,
+            state.code_diff or "",
+            _render_tests(state.test_results),
         )
         try:
             verdict = gateway.structured(
-                model=model, system=_SYSTEM, user=user, schema=Verdict
+                model=model, system=system_prompt, user=user, schema=Verdict
             )
         except GatewayError:
             logger.exception("Verifier gateway call failed; escalating.")
@@ -97,4 +125,34 @@ def make_verifier(gateway: Gateway | None = None, *, model: str | None = None) -
     return verifier
 
 
-__all__ = ["make_verifier"]
+def verifier_predictor(
+    gateway: Gateway,
+    *,
+    model: str,
+    system_prompt: str = DEFAULT_VERIFIER_SYSTEM,
+) -> Callable[[dict[str, Any]], str]:
+    """The production predictor for the verifier eval / optimizer (§2).
+
+    Adapts a labelled dataset case (``goal``/``acceptance_criteria``/``diff``/
+    ``tests_passed``/``test_summary``) into the verifier's call and returns the
+    decision string, so the eval harness scores the *real* judge behind an
+    injected prompt — the seam GEPA optimizes.
+    """
+
+    def predict(inputs: dict[str, Any]) -> str:
+        criteria = "\n".join(f"- {c}" for c in inputs.get("acceptance_criteria", []))
+        passed = inputs.get("tests_passed")
+        status = "PASSED" if passed else "FAILED"
+        evidence = f"Latest sandbox test run: {status}\n{inputs.get('test_summary', '')}"
+        user = _verifier_user(
+            inputs.get("goal", ""), criteria, inputs.get("diff", ""), evidence
+        )
+        verdict = gateway.structured(
+            model=model, system=system_prompt, user=user, schema=Verdict
+        )
+        return verdict.decision
+
+    return predict
+
+
+__all__ = ["DEFAULT_VERIFIER_SYSTEM", "make_verifier", "verifier_predictor"]
