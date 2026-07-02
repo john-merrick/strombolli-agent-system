@@ -41,6 +41,19 @@ def _lesson_from(verdict: Verdict) -> str | None:
     return " ".join(parts)
 
 
+def _skill_from(verdict: Verdict) -> str | None:
+    """Render a reusable skill ("what worked") from a resolved verdict, or None.
+
+    A skill is the *forward-looking* form of a lesson: the validated approach,
+    phrased as guidance for a future task of the same kind. Requires a ``fix``
+    (the thing that worked) — without it there's no reusable technique.
+    """
+    if not verdict.fix:
+        return None
+    tt = verdict.task_type or "this kind of task"
+    return f"For {tt}: {verdict.fix}"
+
+
 def make_memory_write(
     memory: Memory | None = None, *, now: Callable[[], float] = time.time
 ) -> Node:
@@ -78,6 +91,19 @@ def make_memory_write(
                         task_type=verdict.task_type,
                         failure_mode=verdict.failure_mode,
                         ts=ts,
+                    )
+                )
+            # Distill a reusable *skill candidate* ("what worked") — the
+            # agent-written skill library (self-improving §3). It enters as an
+            # unvetted candidate; only an eval run promotes it to approved, so
+            # it can't reach the coder until validated.
+            skill = _skill_from(verdict)
+            if skill is not None:
+                written.append(
+                    memory.procedural.add_skill(
+                        state.task_id, skill,
+                        task_id=state.task_id, ts=ts,
+                        task_type=verdict.task_type,
                     )
                 )
 

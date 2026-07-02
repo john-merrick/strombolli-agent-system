@@ -78,3 +78,25 @@ def test_upsert_overwrites_same_id() -> None:
     store.add(EPISODIC, id="x", document="second version", metadata={"ts": 2.0})
     hits = store.query(EPISODIC, text="second version", k=5)
     assert len([h for h in hits if h.id == "x"]) == 1
+
+
+def test_skill_candidate_not_recalled_until_approved() -> None:
+    from stromboli.memory.procedural import STATUS_APPROVED
+    mem = _memory()
+    mem.procedural.add_skill(
+        "s1", "For add-endpoint: wire the route and add a test.",
+        task_id="t1", ts=1.0, task_type="add-endpoint",
+    )
+    # A candidate is invisible to the planner (recall_skills = approved only).
+    assert mem.recall_skills("add an endpoint", k=3) == []
+    # Promote it, then it is injected.
+    assert mem.procedural.promote("s1", ts=2.0) is True
+    got = mem.recall_skills("add an endpoint route", k=3)
+    assert any("wire the route" in s for s in got)
+    hit = mem.procedural.recall("add endpoint", k=1)[0]
+    assert hit.metadata["status"] == STATUS_APPROVED
+
+
+def test_promote_missing_skill_is_false() -> None:
+    mem = _memory()
+    assert mem.procedural.promote("nope", ts=1.0) is False

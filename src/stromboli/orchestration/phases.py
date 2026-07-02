@@ -97,8 +97,10 @@ class TriagePhases:
             project_context=d.project_context,
         )
         lessons = d.memory.recall_lessons if d.memory is not None else None
+        skills = d.memory.recall_skills if d.memory is not None else None
         self._prompt = make_prompt(
-            d.gateway, model=d.prompt_model, notion=d.notion, retriever=lessons
+            d.gateway, model=d.prompt_model, notion=d.notion,
+            retriever=lessons, skill_retriever=skills,
         )
         self._coding = make_coding(d.coder, d.sandbox, d.worktree_for)
         self._verifier = make_verifier(d.gateway, model=d.verifier_model)

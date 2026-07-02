@@ -70,6 +70,21 @@ class MemoryStore:
             ids=[id], documents=[document], metadatas=[meta]
         )
 
+    def get(self, tier: str, entry_id: str) -> MemoryHit | None:
+        """Fetch one entry by id (exact), or ``None`` if absent."""
+        result = self._collection(tier).get(ids=[entry_id])
+        ids = result.get("ids") or []
+        if not ids:
+            return None
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+        return MemoryHit(
+            id=str(ids[0]),
+            document=str(docs[0]) if docs else "",
+            metadata=dict(metas[0]) if metas and metas[0] else {},
+            distance=0.0,
+        )
+
     def query(
         self,
         tier: str,

@@ -72,6 +72,17 @@ def _lessons_block(retriever: LessonRetriever | None, goal: str) -> str:
     )
 
 
+def _skills_block(retriever: LessonRetriever | None, goal: str) -> str:
+    """The approved-skills context prepended to the planner input, or ""."""
+    if retriever is None:
+        return ""
+    skills = list(retriever(goal))
+    if not skills:
+        return ""
+    body = "\n".join(f"- {skill}" for skill in skills)
+    return f"Reusable skills that worked on similar tasks (apply where they fit):\n{body}"
+
+
 def make_prompt(
     gateway: Gateway | None = None,
     *,
@@ -79,20 +90,24 @@ def make_prompt(
     notion: PromptNotion | None = None,
     prop_name: str = DEFAULT_PROMPT_PROP,
     retriever: LessonRetriever | None = None,
+    skill_retriever: LessonRetriever | None = None,
 ) -> Node:
     """Build the prompt node. With no ``gateway`` it returns a spec-derived stub.
 
     When ``retriever`` is wired, distilled lessons from past similar tasks are
-    injected into the planner's context (design: docs/design-context-as-state.md)
-    — the cross-episode signal landing closest to where instructions are authored.
+    injected into the planner's context (design: docs/design-context-as-state.md);
+    when ``skill_retriever`` is wired, eval-approved reusable skills are injected
+    too (self-improving §3) — both landing where instructions are authored.
     """
 
     def prompt(state: StromboliState) -> dict[str, object]:
         goal = state.spec.goal if state.spec is not None else state.raw_request
         lessons = _lessons_block(retriever, goal)
+        skills = _skills_block(skill_retriever, goal)
         spec_text = _spec_block(state.spec, state.raw_request)
-        if lessons:
-            spec_text = f"{lessons}\n\n{spec_text}"
+        for block in (skills, lessons):  # lessons nearest the spec (last prepended)
+            if block:
+                spec_text = f"{block}\n\n{spec_text}"
         spent = 0
         if gateway is None or model is None:
             generated = spec_text

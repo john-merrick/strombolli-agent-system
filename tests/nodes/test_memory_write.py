@@ -113,3 +113,27 @@ def test_escalation_writes_no_lesson() -> None:
     )
     make_memory_write(mem, now=lambda: 5.0)(_passed_state(verdict=verdict))
     assert mem.recall_lessons("bugfix ambiguous", k=5) == []
+
+
+def test_resolved_with_fix_writes_a_skill_candidate() -> None:
+    from stromboli.memory.procedural import STATUS_CANDIDATE
+    mem = Memory(make_store())
+    verdict = Verdict(
+        decision="pass", reason="ok", cause="forgot the test",
+        fix="add an empty-page test", task_type="add-pagination",
+        failure_mode="missing-tests",
+    )
+    make_memory_write(mem, now=lambda: 3.0)(_passed_state(verdict=verdict))
+    # Skill is written but as an unvetted candidate → not recalled by planner.
+    assert mem.recall_skills("pagination", k=3) == []
+    hit = mem.procedural.recall("pagination empty page", k=1)[0]
+    assert hit.metadata["status"] == STATUS_CANDIDATE
+    assert "add an empty-page test" in hit.document
+
+
+def test_pass_without_fix_writes_no_skill() -> None:
+    mem = Memory(make_store())
+    make_memory_write(mem, now=lambda: 4.0)(
+        _passed_state(verdict=Verdict(decision="pass", reason="clean"), reflections=[])
+    )
+    assert mem.procedural.recall("anything", k=5) == []

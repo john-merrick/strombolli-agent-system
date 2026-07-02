@@ -47,6 +47,14 @@ class Memory:
         """
         return [h.document for h in self.episodic.recall_lessons(query, k=k)]
 
+    def recall_skills(self, query: str, *, k: int = 3) -> list[str]:
+        """Top-k *approved* reusable skills for the planner (self-improving §3).
+
+        Only eval-promoted skills are returned, so an unvetted candidate can't
+        reach the coder. Bounded top-k — retrieve, don't accumulate.
+        """
+        return [h.document for h in self.procedural.recall_approved(query, k=k)]
+
     @classmethod
     def open(cls, persist_dir: str | Path | None = None) -> Memory:
         """Open the persistent memory store under ``persist_dir``."""

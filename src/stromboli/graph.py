@@ -219,13 +219,16 @@ def build_graph(
     lesson_retriever = (
         deps.memory.recall_lessons if deps.memory is not None else None
     )
+    skill_retriever = (
+        deps.memory.recall_skills if deps.memory is not None else None
+    )
     builder.add_node(
         "prompt",
         traced(
             "prompt",
             make_prompt(
                 deps.gateway, model=deps.prompt_model, notion=deps.notion,
-                retriever=lesson_retriever,
+                retriever=lesson_retriever, skill_retriever=skill_retriever,
             ),
         ),
     )

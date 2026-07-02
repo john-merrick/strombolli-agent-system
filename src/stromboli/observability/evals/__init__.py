@@ -14,13 +14,16 @@ from stromboli.observability.evals.harness import (
     langfuse_sink,
     load_dataset,
 )
+from stromboli.observability.evals.skill_gate import GateResult, gate_skill
 from stromboli.observability.evals.spec_eval import run_spec_eval
 from stromboli.observability.evals.verifier_eval import run_verifier_eval
 
 __all__ = [
     "EvalReport",
+    "GateResult",
     "ScoreSink",
     "gate",
+    "gate_skill",
     "langfuse_sink",
     "load_dataset",
     "run_coding_eval",
