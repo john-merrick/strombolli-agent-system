@@ -103,3 +103,70 @@ def test_already_prefixed_model_not_double_routed() -> None:
     gw = LiteLLMGateway(base_url="http://p", api_key="k", completion=fake_completion)
     gw.structured(model="openai/gpt-4o", system="s", user="u", schema=Spec)
     assert captured["model"] == "openai/gpt-4o"
+
+
+def test_structured_captures_usage() -> None:
+    def fake_completion(**_k: Any) -> SimpleNamespace:
+        resp = _response(json.dumps({"goal": "g", "ambiguous": False}))
+        resp.usage = {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42}
+        return resp
+
+    gw = LiteLLMGateway(base_url="http://p", api_key="k", completion=fake_completion)
+    gw.structured(model="m", system="s", user="u", schema=Spec)
+    assert gw.last_usage == {
+        "prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42
+    }
+
+
+def test_usage_resets_when_the_call_fails() -> None:
+    from stromboli.llm.gateway import usage_tokens
+
+    def boom(**_k: Any) -> SimpleNamespace:
+        raise RuntimeError("proxy down")
+
+    gw = LiteLLMGateway(base_url="http://p", api_key="k", completion=boom)
+    gw.last_usage = {"total_tokens": 999}  # stale from a previous call
+    with pytest.raises(GatewayError):
+        gw.structured(model="m", system="s", user="u", schema=Spec)
+    assert gw.last_usage is None
+    assert usage_tokens(gw.last_usage) == 0
+
+
+def test_usage_tokens_totals() -> None:
+    from stromboli.llm.gateway import usage_tokens
+
+    assert usage_tokens(None) == 0
+    assert usage_tokens({"total_tokens": 42}) == 42
+    # No explicit total: input/output (SDK-shaped) counters are summed.
+    assert usage_tokens({"input_tokens": 10, "output_tokens": 5}) == 15
+
+
+def test_gateway_retries_once_on_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("stromboli.llm.gateway.time.sleep", lambda _s: None)
+    attempts: list[int] = []
+
+    def flaky(**_k: Any) -> SimpleNamespace:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("proxy hiccup")
+        return _response(json.dumps({"goal": "g", "ambiguous": False}))
+
+    gw = LiteLLMGateway(base_url="http://p", api_key="k", completion=flaky)
+    spec = gw.structured(model="m", system="s", user="u", schema=Spec)
+    assert spec.goal == "g" and len(attempts) == 2
+
+
+def test_usage_tokens_weights_cache_reads() -> None:
+    from stromboli.llm.gateway import usage_tokens
+
+    # Cache reads bill ~10%: 1M cache-read tokens count as 100k, not 1M —
+    # else one real-repo coding pass trips the ceiling before any revise.
+    usage = {
+        "input_tokens": 1_000,
+        "output_tokens": 500,
+        "cache_creation_input_tokens": 2_000,
+        "cache_read_input_tokens": 1_000_000,
+    }
+    assert usage_tokens(usage) == 1_000 + 500 + 2_000 + 100_000

@@ -40,6 +40,15 @@ BRANCH_PREFIX: Final = "stromboli"
 #: Max length of the slug portion of a branch / directory name.
 SLUG_MAX_LEN: Final = 50
 
+#: Build artifacts that must never reach the diff / the PR commit — seeded into
+#: each clone's ``.git/info/exclude`` (shared by its worktrees).
+BUILD_JUNK_EXCLUDES: Final = (
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".stromboli-venv/",
+)
+
 #: Git runner: given an argv (sans the leading ``git``), run it, raising
 #: :class:`GitError` on a non-zero exit.
 GitRunner = Callable[[Sequence[str]], None]
@@ -89,7 +98,13 @@ def derive_branch_name(task_id: str, task_name: str) -> str:
 
 
 def clone_url(repo: Repo, token: str | None = None) -> str:
-    """HTTPS clone URL for ``repo``; embeds ``token`` for authenticated access."""
+    """HTTPS clone URL for ``repo``; embeds ``token`` for authenticated access.
+
+    A repo with an explicit ``source`` (e.g. a local path for a CLI task) clones
+    from that source directly — no token, no github.com.
+    """
+    if repo.source:
+        return repo.source
     if token:
         return f"https://x-access-token:{token}@github.com/{repo.full_name}.git"
     return f"https://github.com/{repo.full_name}.git"
@@ -146,7 +161,28 @@ class WorktreeManager:
             logger.info("Cloning %s into %s", repo.full_name, clone)
             clone.parent.mkdir(parents=True, exist_ok=True)
             self._run(["clone", clone_url(repo, self._token), str(clone)])
+        self._seed_excludes(clone)
         return clone
+
+    def _seed_excludes(self, clone: Path) -> None:
+        """Ignore Stromboli build junk repo-locally (``.git/info/exclude``).
+
+        Worktrees share the clone's exclude file, so this covers the diff the
+        verifier judges, ``git add -A`` in the PR commit, and ``status`` checks
+        — a target repo without a ``.gitignore`` must not ship ``__pycache__``
+        or the sandbox's dependency venv.
+        """
+        exclude = clone / ".git" / "info" / "exclude"
+        try:
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            current = exclude.read_text() if exclude.exists() else ""
+            missing = [p for p in BUILD_JUNK_EXCLUDES if p not in current]
+            if missing:
+                exclude.write_text(
+                    current + "\n# Stromboli build junk\n" + "\n".join(missing) + "\n"
+                )
+        except OSError as exc:  # pragma: no cover - best-effort
+            logger.warning("Could not seed git excludes in %s: %s", clone, exc)
 
     # -- worktree lifecycle ------------------------------------------------- #
 
@@ -246,6 +282,9 @@ class WorktreeManager:
 
 #: The default test command run in the sandbox (the build's only oracle, §6.4).
 DEFAULT_TEST_COMMAND: Final = ("python", "-m", "pytest", "-q")
+#: The worktree-local venv the dependency bootstrap installs into (ignored via
+#: BUILD_JUNK_EXCLUDES so it never reaches the diff or the PR).
+SANDBOX_VENV_DIR: Final = ".stromboli-venv"
 #: The default Docker image the sandbox runs against (see docker/sandbox.Dockerfile).
 DEFAULT_SANDBOX_IMAGE: Final = "stromboli-sandbox:latest"
 #: Cap on captured test output so a runaway log never blows up the state object.
@@ -337,6 +376,53 @@ class SandboxRunner:
             *command,
         ]
 
+    def _bootstrap_deps(self, path: Path) -> str | None:
+        """Install the target repo's deps into a worktree-local venv (networked).
+
+        A real repo's tests import its dependencies, which the bare sandbox
+        image doesn't have — without this the oracle fails on collection
+        (exit 2) regardless of the change's quality. This one prep container
+        runs **with** network to install; the test run itself stays
+        ``--network none``. Returns the venv python (container-relative) or
+        ``None`` (no manifest / install failed → bare image python, the old
+        behavior).
+        """
+        manifest = next(
+            (
+                m
+                for m in ("requirements.txt", "pyproject.toml")
+                if (path / m).exists()
+            ),
+            None,
+        )
+        if manifest is None:
+            return None
+        venv_python = f"{SANDBOX_VENV_DIR}/bin/python"
+        if (path / SANDBOX_VENV_DIR / "bin" / "python").exists():
+            return venv_python  # already bootstrapped (revise cycle / resume)
+        deps = "-r requirements.txt" if manifest == "requirements.txt" else "-e ."
+        install = (
+            f"uv venv {SANDBOX_VENV_DIR} --quiet && "
+            f"uv pip install --python {venv_python} --quiet pytest {deps}"
+        )
+        argv = [
+            "docker", "run", "--rm",
+            "--name", f"{self._container_name(path)}-prep",
+            "--label", "stromboli=sandbox",
+            "-v", f"{path}:/work", "-w", "/work",
+            self._image, "sh", "-lc", install,
+        ]
+        logger.info("Sandbox deps: %s (%s)", " ".join(argv[:6]), manifest)
+        exit_code, output = self._run(argv, path)
+        if exit_code != 0:
+            logger.warning(
+                "Sandbox dep bootstrap failed (exit %s); using the bare image. %s",
+                exit_code,
+                output[-500:],
+            )
+            return None
+        return venv_python
+
     def run_tests(
         self,
         worktree_path: str | Path,
@@ -345,11 +431,16 @@ class SandboxRunner:
         """Run ``command`` against ``worktree_path`` and capture pass/fail+output."""
         path = Path(worktree_path)
         if self._use_docker:
+            resolved = list(command)
+            if tuple(command) == DEFAULT_TEST_COMMAND:
+                venv_python = self._bootstrap_deps(path)
+                if venv_python is not None:
+                    resolved = [venv_python, "-m", "pytest", "-q"]
             name = self._container_name(path)
             # Clear a prior container of this name so the run isn't blocked, and
             # so `docker ps -a` shows only the latest attempt (best-effort).
             self._run(["docker", "rm", "-f", name], path)
-            argv = self._docker_argv(path, command)
+            argv = self._docker_argv(path, resolved)
         else:
             argv = list(command)
         logger.info("Sandbox: %s", " ".join(argv))

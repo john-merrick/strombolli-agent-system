@@ -30,7 +30,9 @@ def test_graph_pauses_at_human_interrupt() -> None:
     config = {"configurable": {"thread_id": "task-1"}}
 
     result = graph.invoke(
-        StromboliState(task_id="task-1", source="cli", raw_request="vague"),
+        # Notion-sourced: the escalation is written back to the task page (a
+        # CLI task has no page — its Notion write-back is skipped).
+        StromboliState(task_id="task-1", source="notion", raw_request="vague"),
         config=config,
     )
     # The run paused at the interrupt rather than reaching a terminal state.

@@ -22,7 +22,8 @@ _FULL_ENV = {
 
 def test_load_settings_with_full_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Clear optional vars that may leak in from the host env, for a hermetic test.
-    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+    for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "MAX_INNER_TURNS",
+                "MAX_OUTER_REVISIONS", "MAX_TOKENS_PER_TASK"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     settings = load_settings(_env_file=None, **_FULL_ENV)

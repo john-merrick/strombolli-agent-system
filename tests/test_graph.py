@@ -152,3 +152,95 @@ def test_build_graph_is_compilable() -> None:
     for name in ("intake", "spec", "prompt", "coding", "verifier", "pr", "human",
                  "memory"):
         assert name in nodes
+
+
+def test_verdict_gate_revise_over_token_budget_escalates() -> None:
+    gate = make_route_after_verdict(
+        Budgets(max_outer_revisions=3, max_tokens_per_task=1_000)
+    )
+    state = StromboliState(
+        task_id="t", source="cli", raw_request="x", outer_iterations=1,
+        tokens_used=1_500,
+        verdict=Verdict(decision="revise", reason="fix it"),
+    )
+    assert gate(state) == "human"
+
+
+def test_parse_repo_arg_local_path(tmp_path: object) -> None:
+    from pathlib import Path
+
+    from stromboli.graph import _parse_repo_arg
+
+    path = Path(str(tmp_path)) / "scratch-repo"
+    path.mkdir()
+    repo = _parse_repo_arg(str(path))
+    assert repo.source == str(path.resolve())
+    assert repo.owner == "local" and repo.repo == "scratch-repo"
+
+
+def test_parse_repo_arg_owner_name() -> None:
+    from stromboli.graph import _parse_repo_arg
+
+    repo = _parse_repo_arg("eyezac/some-repo.git")
+    assert repo.owner == "eyezac" and repo.repo == "some-repo"
+    assert repo.source is None
+
+
+def test_parse_repo_arg_rejects_garbage() -> None:
+    import pytest
+
+    from stromboli.graph import _parse_repo_arg
+
+    with pytest.raises(ValueError, match="--repo"):
+        _parse_repo_arg("not-a-repo-or-path")
+
+
+def test_notion_run_claims_task_before_provisioning(
+    monkeypatch: object, tmp_path: object
+) -> None:
+    """The Working-on claim must precede worktree provisioning — the watcher's
+    dispatch guard is Status == To do, so a claim written only at intake leaves
+    a clone-long window in which a concurrent poll double-dispatches the task."""
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+    from pathlib import Path
+    from typing import Any, cast
+
+    import pytest as _pytest
+
+    from stromboli import graph as graph_mod
+    from stromboli.sandbox.runner import GitError
+    from stromboli.settings import Settings
+    from tests.nodes._fakes import FakeNotion
+
+    mp = cast(_pytest.MonkeyPatch, monkeypatch)
+    notion = FakeNotion()
+    deps = GraphDeps(notion=notion, workspace_root=Path(str(tmp_path)))
+    mp.setattr(graph_mod, "_deps_from_settings", lambda _s: deps)
+
+    @contextmanager
+    def fake_provision(_settings: Any, _notion: Any, _task_id: str) -> Iterator[Any]:
+        # The board claim must already be visible when provisioning starts.
+        assert ("pg-race", "Working on") in notion.status_writes
+        raise GitError("branch already used by worktree")
+        yield  # pragma: no cover
+
+    mp.setattr(graph_mod, "_provision_worktree", fake_provision)
+
+    final = graph_mod.run_task(
+        "", source="notion", task_id="pg-race", settings=cast(Settings, object())
+    )
+    # The collision still escalates gracefully (no crash), parking to Review.
+    assert final.status == "escalated"
+    assert ("pg-race", "Review") in notion.status_writes
+
+
+def test_route_after_pr_escalation_goes_to_human() -> None:
+    from stromboli.nodes.router import route_after_pr
+
+    ok = StromboliState(task_id="t", source="cli", raw_request="x", status="pr")
+    assert route_after_pr(ok) == "memory"
+    failed = StromboliState(
+        task_id="t", source="cli", raw_request="x", status="escalated"
+    )
+    assert route_after_pr(failed) == "human"

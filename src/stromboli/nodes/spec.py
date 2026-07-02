@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 
-from stromboli.llm.gateway import Gateway, GatewayError
+from stromboli.llm.gateway import Gateway, GatewayError, usage_tokens
 from stromboli.nodes.intake import Node
 from stromboli.state import Spec, StromboliState
 
@@ -79,7 +79,13 @@ def make_spec(
                 ambiguous=True,
                 constraints=["spec generation failed — needs human review"],
             )
-        return {"spec": produced, "status": "specced", "memory_refs": memory_refs}
+        spent = usage_tokens(getattr(gateway, "last_usage", None))
+        return {
+            "spec": produced,
+            "status": "specced",
+            "memory_refs": memory_refs,
+            "tokens_used": state.tokens_used + spent,
+        }
 
     return spec
 

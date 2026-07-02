@@ -66,3 +66,11 @@ def test_spec_injects_project_context() -> None:
     )
     node(_state())
     assert "Use framework Z" in gw.calls[0]["user"]
+
+
+def test_spec_accumulates_gateway_tokens() -> None:
+    gw = FakeGateway({"goal": "g", "ambiguous": False})
+    gw.last_usage = {"total_tokens": 42}  # what the gateway captured on the call
+    node = make_spec(gw, model="m")
+    out = node(_state())
+    assert out["tokens_used"] == 42

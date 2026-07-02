@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from stromboli.llm.gateway import Gateway, GatewayError
+from stromboli.llm.gateway import Gateway, GatewayError, usage_tokens
 from stromboli.nodes.intake import Node
 from stromboli.state import Spec, StromboliState
 
@@ -66,6 +66,7 @@ def make_prompt(
 
     def prompt(state: StromboliState) -> dict[str, object]:
         spec_text = _spec_block(state.spec, state.raw_request)
+        spent = 0
         if gateway is None or model is None:
             generated = spec_text
         else:
@@ -76,6 +77,7 @@ def make_prompt(
             except GatewayError:
                 logger.exception("Prompt gateway call failed; using spec text.")
                 generated = spec_text
+            spent = usage_tokens(getattr(gateway, "last_usage", None))
 
         # Write the prompt back to Notion for traceability (best-effort).
         if notion is not None and state.source == "notion":
@@ -84,7 +86,7 @@ def make_prompt(
             except Exception as exc:  # noqa: BLE001 - trace write must not crash
                 logger.warning("Could not write Prompt for %s: %s", state.task_id, exc)
 
-        return {"plan": generated}
+        return {"plan": generated, "tokens_used": state.tokens_used + spent}
 
     return prompt
 

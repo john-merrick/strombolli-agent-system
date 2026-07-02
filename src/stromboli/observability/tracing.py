@@ -25,10 +25,23 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from types import TracebackType
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+#: The node span currently open (set by :func:`traced_node`), so lower layers
+#: (e.g. the LiteLLM gateway) can nest child spans — per-LLM-call token usage —
+#: under the active node without threading a span through every signature.
+_current_span: ContextVar[Span | None] = ContextVar(
+    "stromboli_current_span", default=None
+)
+
+
+def current_span() -> Span:
+    """The active node span, or an inert :class:`Span` when none is open."""
+    return _current_span.get() or Span()
 
 
 class Span:
@@ -87,9 +100,11 @@ def traced_node(
     logged and swallowed (the node's own exceptions still propagate).
     """
     span = tracer.node(name, metadata=metadata)
+    token = _current_span.set(span)
     try:
         yield span
     finally:
+        _current_span.reset(token)
         try:
             span.end()
         except Exception as exc:  # noqa: BLE001 - tracing must never fail a build
@@ -118,8 +133,15 @@ class _LangfuseSpan(Span):
             return Span()
 
     def update(self, **metadata: Any) -> None:
+        # ``input`` / ``output`` are first-class observation fields in Langfuse
+        # (rendered as the span's I/O panes); everything else is metadata.
+        reserved = {
+            key: metadata.pop(key) for key in ("input", "output") if key in metadata
+        }
         try:
-            self._handle.update(metadata=metadata)
+            if metadata:
+                reserved["metadata"] = metadata
+            self._handle.update(**reserved)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Langfuse span update failed: %s", exc)
 
@@ -223,5 +245,6 @@ __all__ = [
     "NullTracer",
     "Span",
     "build_tracer",
+    "current_span",
     "traced_node",
 ]

@@ -108,3 +108,78 @@ def test_sandbox_no_docker_runs_command_directly() -> None:
 
     SandboxRunner(run=fake_run, use_docker=False).run_tests("/tmp/wt", ("make", "test"))
     assert seen["argv"] == ["make", "test"]
+
+
+def test_clone_url_prefers_explicit_source() -> None:
+    # A CLI task's local-path repo clones from the path — no token, no github.
+    repo = Repo(owner="local", repo="scratch", source="/tmp/scratch")
+    assert clone_url(repo, token="secret") == "/tmp/scratch"
+    # Without a source the GitHub HTTPS URL (with token) is unchanged.
+    gh = Repo(owner="o", repo="r")
+    assert clone_url(gh, token="secret") == "https://x-access-token:secret@github.com/o/r.git"
+
+
+def test_ensure_clone_seeds_build_junk_excludes(tmp_path: Path) -> None:
+    cmds: list[list[str]] = []
+    manager = WorktreeManager(tmp_path, run=lambda a: cmds.append(list(a)))
+    repo = Repo(owner="o", repo="r")
+    clone = manager.ensure_clone(repo)
+    exclude = (clone / ".git" / "info" / "exclude").read_text()
+    # Junk must never reach the diff / the PR commit (`git add -A`).
+    for pattern in ("__pycache__/", ".stromboli-venv/"):
+        assert pattern in exclude
+    # Idempotent: a second call doesn't duplicate the block.
+    (clone / ".git").mkdir(exist_ok=True)
+    manager.ensure_clone(repo)
+    assert exclude.count("__pycache__/") == 1
+
+
+def test_sandbox_bootstraps_deps_when_manifest_exists(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def recorder(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
+        calls.append(list(argv))
+        return 0, "ok"
+
+    (tmp_path / "requirements.txt").write_text("httpx\n")
+    runner = SandboxRunner(run=recorder)
+    result = runner.run_tests(tmp_path)
+    assert result.passed
+    # First call: the networked prep container installing into the venv.
+    prep = calls[0]
+    assert prep[:2] == ["docker", "run"] and "--network" not in prep
+    assert "uv venv .stromboli-venv" in prep[-1]
+    assert "-r requirements.txt" in prep[-1]
+    # The test run itself uses the venv python — offline.
+    test_run = calls[-1]
+    assert "--network" in test_run and "none" in test_run
+    assert ".stromboli-venv/bin/python" in test_run
+
+
+def test_sandbox_skips_bootstrap_without_manifest(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def recorder(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
+        calls.append(list(argv))
+        return 0, "ok"
+
+    runner = SandboxRunner(run=recorder)
+    runner.run_tests(tmp_path)
+    assert not any("uv venv" in " ".join(c) for c in calls)
+
+
+def test_sandbox_falls_back_when_bootstrap_fails(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def recorder(argv: Sequence[str], cwd: Path) -> tuple[int, str]:
+        calls.append(list(argv))
+        if "-prep" in " ".join(argv):
+            return 1, "resolution failed"
+        return 0, "ok"
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    runner = SandboxRunner(run=recorder)
+    result = runner.run_tests(tmp_path)
+    # Install failure degrades to the bare image python (the old behavior).
+    assert result.passed
+    assert "python" in calls[-1] and ".stromboli-venv/bin/python" not in calls[-1]

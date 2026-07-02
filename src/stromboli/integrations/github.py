@@ -251,7 +251,8 @@ def publish_pr(
         body=derive_pr_body(task),
     )
     logger.info("Opened PR %s for task %s", pr.url, task.page_id)
-    notion.update_task(task.page_id, pr_url=pr.url)
+    if notion is not None:  # a CLI task has no page to write the URL back to
+        notion.update_task(task.page_id, pr_url=pr.url)
     return PublishResult(pr_url=pr.url, empty_diff=False)
 
 

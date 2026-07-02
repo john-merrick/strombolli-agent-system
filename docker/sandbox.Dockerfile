@@ -13,6 +13,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git make \
     && rm -rf /var/lib/apt/lists/*
 
+# The default test command is `python -m pytest` (sandbox/runner.py) and the
+# container runs with --network none, so the test runner must be pre-baked.
+RUN uv pip install --system pytest
+
 WORKDIR /work
 
 # Tests run as a non-root user against the mounted worktree.

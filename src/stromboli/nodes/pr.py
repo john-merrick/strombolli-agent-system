@@ -62,10 +62,23 @@ def make_pr(
             logger.info("[dry-run] would open a PR for task %s", state.task_id)
             return {"pr_url": None, "status": "pr"}
 
-        worktree = worktree_for(state)
-        result = publish_pr(
-            notion, github, worktree, _task_for_pr(state), base=base, run=git_run
-        )
+        # Only a Notion-sourced task has a page for the PR-URL write-back.
+        pr_notion = notion if state.source == "notion" else None
+        try:
+            worktree = worktree_for(state)
+            result = publish_pr(
+                pr_notion, github, worktree, _task_for_pr(state),
+                base=base, run=git_run,
+            )
+        except Exception as exc:  # noqa: BLE001 - the last node must not crash
+            # The verified diff exists; a push/API failure here is operational
+            # (auth, network, branch protection), not a build failure — park it
+            # for a human rather than crash and lose the whole run.
+            logger.exception("PR publication failed for task %s", state.task_id)
+            return {
+                "status": "escalated",
+                "reflections": [f"PR publication failed: {exc}"],
+            }
         if result.empty_diff:
             logger.info("No changes for task %s; routing to review.", state.task_id)
         return {"pr_url": result.pr_url, "status": "pr"}

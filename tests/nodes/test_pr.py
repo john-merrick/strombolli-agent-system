@@ -67,3 +67,22 @@ def test_live_empty_diff_opens_no_pr() -> None:
     )(_state())
     assert out["pr_url"] is None
     assert github.opened == {}  # nothing opened on an empty diff
+
+
+def test_pr_publication_failure_escalates_not_crashes() -> None:
+    class _BoomGitHub:
+        def open_pull_request(self, *a: object, **k: object) -> PullRequest:
+            raise RuntimeError("push rejected: branch protection")
+
+    node = make_pr(
+        github=_BoomGitHub(),
+        worktree_for=lambda _s: make_worktree(),
+        dry_run=False,
+        git_run=_dirty_git,
+    )
+    out = node(_state())
+    # An operational failure after a verified diff parks with a human — the
+    # last node must never crash the run.
+    assert out["status"] == "escalated"
+    reflections = out["reflections"]
+    assert isinstance(reflections, list) and "PR publication failed" in reflections[0]

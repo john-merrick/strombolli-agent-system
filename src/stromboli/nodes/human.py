@@ -52,7 +52,9 @@ def make_human(
     def human(state: StromboliState) -> dict[str, object]:
         reason = _reason(state)
         notifier.escalation(state.task_id, reason)
-        if notion is not None:
+        # Only a Notion-sourced task has a page to write back to (a CLI task's
+        # id is a random uuid, not a Notion page id).
+        if notion is not None and state.source == "notion":
             resilient_append(
                 notion, state.task_id, f"🚨 **Stromboli needs you:** {reason}"
             )

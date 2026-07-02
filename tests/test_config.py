@@ -54,7 +54,10 @@ def test_models_defaults_split_surfaces() -> None:
     assert m.verifier != m.coder
 
 
-def test_from_settings_maps_env() -> None:
+def test_from_settings_maps_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Budget vars may leak in from the host env (.env autoload by a dependency).
+    for key in ("MAX_INNER_TURNS", "MAX_OUTER_REVISIONS", "MAX_TOKENS_PER_TASK"):
+        monkeypatch.delenv(key, raising=False)
     settings = load_settings(_env_file=None, **_ENV)
     config = from_settings(settings)
     assert config.budgets.max_inner_turns == 25

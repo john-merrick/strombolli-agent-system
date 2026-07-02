@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from stromboli.llm.coder import Coder, CoderError, RateLimitError
+from stromboli.llm.gateway import usage_tokens
 from stromboli.nodes.intake import Node
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import DEFAULT_TEST_COMMAND, TestSandbox, Worktree
@@ -123,12 +124,13 @@ def make_coding(
                         "after the window resets"
                     ],
                 }
-            # Nest each SDK turn as a child span (PRD §8).
+            # Nest each SDK turn as a child span (PRD §8) — ended immediately;
+            # an unended observation is never exported.
             for turn in run.turn_records:
                 span.child(
                     f"sdk-turn-{turn.index}",
                     metadata={"tools": list(turn.tools), "usage": turn.usage},
-                )
+                ).end()
             span.update(turns=run.turns, subtype=run.subtype, cost_usd=run.cost_usd)
             if not run.clean:
                 raise CoderError(
@@ -137,27 +139,39 @@ def make_coding(
                 )
             sandbox_result = sandbox.run_tests(worktree.path, test_command)
 
-        summary = (
-            "tests passed"
-            if sandbox_result.passed
-            else f"tests failed (exit {sandbox_result.exit_code})"
-        )
-        update: dict[str, object] = {
-            "code_diff": run.diff,
-            "test_results": [
-                TestResult(
-                    passed=sandbox_result.passed,
-                    summary=summary,
-                    raw=sandbox_result.output,
-                )
-            ],
-            "inner_iterations": run.turns,
-            "session_id": run.session_id,
-            "status": "coding",
-        }
-        # A revise re-entry is one completed outer-recursion cycle (PRD §6.6).
-        if state.verdict is not None and state.verdict.decision == "revise":
-            update["outer_iterations"] = state.outer_iterations + 1
+            summary = (
+                "tests passed"
+                if sandbox_result.passed
+                else f"tests failed (exit {sandbox_result.exit_code})"
+            )
+            # Prefer the SDK's cumulative usage; fall back to summing the turns.
+            spent = usage_tokens(run.usage) or sum(
+                usage_tokens(turn.usage) for turn in run.turn_records
+            )
+            update: dict[str, object] = {
+                "code_diff": run.diff,
+                "test_results": [
+                    TestResult(
+                        passed=sandbox_result.passed,
+                        summary=summary,
+                        raw=sandbox_result.output,
+                    )
+                ],
+                "inner_iterations": run.turns,
+                "session_id": run.session_id,
+                "status": "coding",
+                "tokens_used": state.tokens_used + spent,
+            }
+            # A revise re-entry is one completed outer-recursion cycle (§6.6).
+            if state.verdict is not None and state.verdict.decision == "revise":
+                update["outer_iterations"] = state.outer_iterations + 1
+            span.update(
+                output={
+                    "tests_passed": sandbox_result.passed,
+                    "code_diff_chars": len(run.diff),
+                    "tokens_used": state.tokens_used + spent,
+                }
+            )
         return update
 
     return coding

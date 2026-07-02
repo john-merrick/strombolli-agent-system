@@ -215,3 +215,54 @@ def test_rate_limit_raises_retryable_error(monkeypatch: pytest.MonkeyPatch) -> N
     # The session is captured so the caller can resume after the window.
     assert exc.value.session_id == "sess-rl"
     assert exc.value.resets_at == "2026-07-01T00:00:00Z"
+
+
+def test_git_diff_includes_untracked_files(tmp_path: object) -> None:
+    """New files the agent creates must appear in the captured diff (the
+    verifier judges the diff; untracked-but-real work must not read as empty)."""
+    import subprocess
+    from pathlib import Path
+
+    from stromboli.llm.coder import _git_diff
+
+    root = Path(str(tmp_path))
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "root"],
+                   cwd=root, check=True)
+    (root / "new_module.py").write_text("VALUE = 1\n")
+    junk = root / "__pycache__"
+    junk.mkdir()
+    (junk / "new_module.cpython-312.pyc").write_bytes(b"\x00")
+
+    diff = _git_diff(root)
+    assert "new_module.py" in diff
+    assert "+VALUE = 1" in diff
+    # Bytecode junk from the agent's own test runs must not reach the verifier.
+    assert "__pycache__" not in diff
+
+
+def test_git_diff_survives_agent_commits(tmp_path: object) -> None:
+    """The agent may commit its own work; the captured diff must still show it
+    (diff vs HEAD would be empty and read as 'the coder did nothing')."""
+    import subprocess
+    from pathlib import Path
+
+    from stromboli.llm.coder import _git_diff
+
+    src = Path(str(tmp_path)) / "src"
+    src.mkdir()
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=src, check=True)
+    (src / "a.py").write_text("A = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=src, check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], cwd=src, check=True)
+
+    clone = Path(str(tmp_path)) / "clone"
+    subprocess.run(["git", "clone", "-q", str(src), str(clone)], check=True)
+    (clone / "a.py").write_text("A = 2\n")
+    subprocess.run(["git", "add", "-A"], cwd=clone, check=True)
+    subprocess.run([*git, "commit", "-qm", "agent work"], cwd=clone, check=True)
+
+    diff = _git_diff(clone)
+    assert "+A = 2" in diff  # committed change still visible

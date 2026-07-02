@@ -18,6 +18,7 @@ HUMAN = "human"
 PR = "pr"
 VERIFIER = "verifier"
 PROMPT = "prompt"
+MEMORY = "memory"
 
 #: A routing function: state → next node name.
 RouteFn = Callable[[StromboliState], str]
@@ -45,11 +46,25 @@ def route_after_coding(state: StromboliState) -> str:
     return VERIFIER
 
 
+def route_after_pr(state: StromboliState) -> str:
+    """After PR: a publication failure → Human, otherwise → Memory Write.
+
+    The PR node sets ``status="escalated"`` when the push / API call fails
+    (an operational fault after a verified diff) — that needs a human, not a
+    memory write that would overwrite the status with ``done``.
+    """
+    if state.status == "escalated":
+        return HUMAN
+    return MEMORY
+
+
 def make_route_after_verdict(budgets: Budgets) -> RouteFn:
     """Verdict gate (§6.6): pass → PR, revise (under cap) → Coding, else → Human.
 
-    ``escalate`` or an exhausted revision budget routes to the Human Interrupt.
-    The revise budget is the **outer** recursion bound (PRD §5).
+    ``escalate`` or an exhausted budget routes to the Human Interrupt. Two
+    budgets gate a revise cycle: the revise cap (the **outer** recursion bound,
+    PRD §5) and the per-task token ceiling ``max_tokens_per_task`` — once the
+    task has spent past it, another coding pass is refused (backstop, §4a).
     """
 
     def route_after_verdict(state: StromboliState) -> str:
@@ -61,9 +76,10 @@ def make_route_after_verdict(budgets: Budgets) -> RouteFn:
         if (
             verdict.decision == "revise"
             and state.outer_iterations < budgets.max_outer_revisions
+            and state.tokens_used < budgets.max_tokens_per_task
         ):
             return CODING
-        # escalate, or revise budget exhausted
+        # escalate, or a budget (revise cap / token ceiling) exhausted
         return HUMAN
 
     return route_after_verdict
@@ -72,11 +88,13 @@ def make_route_after_verdict(budgets: Budgets) -> RouteFn:
 __all__ = [
     "CODING",
     "HUMAN",
+    "MEMORY",
     "PR",
     "PROMPT",
     "VERIFIER",
     "RouteFn",
     "make_route_after_verdict",
     "route_after_coding",
+    "route_after_pr",
     "route_after_spec",
 ]

@@ -34,8 +34,13 @@ class RunTrace:
         """Record a free-form event (e.g. an error)."""
 
 
-def _summarize(output: dict[str, Any]) -> dict[str, Any]:
-    """Reduce a node's partial-state dict to a compact, readable summary."""
+def summarize_output(output: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a node's partial-state dict to a compact, readable summary.
+
+    Shared by the local run trace and the Langfuse node spans (the span's
+    ``output`` pane) — in LangGraph a node's returned partial state *is* the
+    state diff, so this is exactly "what this node changed".
+    """
     summary: dict[str, Any] = {}
     for key, value in output.items():
         if key == "code_diff" and isinstance(value, str):
@@ -82,7 +87,7 @@ class FileRunTrace(RunTrace):
 
     def record(self, node: str, output: dict[str, Any]) -> None:
         self._n += 1
-        summary = _summarize(output)
+        summary = summarize_output(output)
         self._append(
             {"step": self._n, "node": node, "output": summary},
             f"{self._n}. {node}",
@@ -98,4 +103,4 @@ class FileRunTrace(RunTrace):
         )
 
 
-__all__ = ["FileRunTrace", "RunTrace"]
+__all__ = ["FileRunTrace", "RunTrace", "summarize_output"]

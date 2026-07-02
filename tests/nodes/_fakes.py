@@ -29,6 +29,8 @@ class FakeGateway:
         self._payload = payload or {}
         self._error = error
         self.calls: list[dict[str, str]] = []
+        #: Mirrors LiteLLMGateway.last_usage (nodes read it for tokens_used).
+        self.last_usage: dict[str, object] | None = None
 
     def structured(self, *, model: str, system: str, user: str, schema: type[T]) -> T:
         self.calls.append({"model": model, "system": system, "user": user})

@@ -36,7 +36,9 @@ from stromboli.config import (
 )
 from stromboli.integrations.github import GitHubGateway, GitRunner
 from stromboli.integrations.notion import (
+    STATUS_WORKING,
     AppendGateway,
+    Repo,
     build_feedback_summary,
     resilient_append,
 )
@@ -62,12 +64,14 @@ from stromboli.nodes.intake import NotionReader
 from stromboli.nodes.router import (
     CODING,
     HUMAN,
+    MEMORY,
     PR,
     PROMPT,
     VERIFIER,
+    route_after_pr,
     route_after_spec,
 )
-from stromboli.observability.runtrace import FileRunTrace, RunTrace
+from stromboli.observability.runtrace import FileRunTrace, RunTrace, summarize_output
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import GitError, TestSandbox, Worktree
 from stromboli.settings import Settings, load_settings
@@ -149,8 +153,19 @@ def _wrap(
 
     def wrapped(state: StromboliState) -> dict[str, object]:
         if tracer is not None:
-            with traced_node(tracer, name, metadata={"task_id": state.task_id}):
+            with traced_node(tracer, name, metadata={"task_id": state.task_id}) as span:
+                span.update(
+                    input={
+                        "status": state.status,
+                        "outer_iterations": state.outer_iterations,
+                        "tokens_used": state.tokens_used,
+                    }
+                )
                 out = node(state)
+                # A node's returned partial state IS the state diff (PRD §5) —
+                # surface it as the span's output so Langfuse answers "what did
+                # this node change and why did the graph route as it did".
+                span.update(output=summarize_output(out))
         else:  # self-tracing node (coding nests its own SDK-turn spans)
             out = node(state)
         run_trace.record(name, out)
@@ -173,7 +188,8 @@ def build_graph(
         prompt → coding
         coding ─→ verifier | human (rate-limit escalation, §4a)
         verifier ─(verdict gate §6.6)→ pr | coding | human
-        pr → memory → END
+        pr ─→ memory | human (publication failure)
+        memory → END
         human → END
     """
     trace = run_trace or RunTrace()
@@ -257,7 +273,11 @@ def build_graph(
         make_route_after_verdict(deps.budgets),
         {PR: "pr", CODING: "coding", HUMAN: "human"},
     )
-    builder.add_edge("pr", "memory")
+    # A PR publication failure (after a verified diff) parks with a human
+    # rather than proceeding to the memory write.
+    builder.add_conditional_edges(
+        "pr", route_after_pr, {MEMORY: "memory", HUMAN: "human"}
+    )
     builder.add_edge("memory", END)
     builder.add_edge("human", END)
 
@@ -272,6 +292,8 @@ def run_task(
     settings: Settings | None = None,
     deps: GraphDeps | None = None,
     checkpointer: Any | None = None,
+    repo: str | None = None,
+    dry_run_pr: bool | None = None,
 ) -> StromboliState:
     """Run one task end-to-end through the graph and return its final state.
 
@@ -279,6 +301,11 @@ def run_task(
     compiled graph under a checkpointer thread, and closes the trace. When
     ``deps`` is supplied the run is fully offline (no settings/Langfuse needed) —
     that is the path tests and the Phase 0 stub use.
+
+    ``repo`` (CLI source only) names the target repository — a local path or a
+    GitHub ``owner/name`` — a clone-per-task worktree is provisioned from, so a
+    CLI task reaches the real coding node without Notion. ``dry_run_pr`` (when
+    not ``None``) overrides whether the PR node opens a real PR.
     """
     resolved_id = task_id or uuid.uuid4().hex
 
@@ -288,10 +315,21 @@ def run_task(
 
     resolved_settings = settings or load_settings()
     deps = _deps_from_settings(resolved_settings)
+    if dry_run_pr is not None:
+        deps.dry_run_pr = dry_run_pr
 
     # A Notion-sourced task gets a clone-per-task worktree (PRD §11.4) so the
     # coding + PR nodes operate on an isolated checkout, cleaned up on exit.
     if source == "notion" and deps.notion is not None:
+        # Claim the task on the board BEFORE the (slow) clone/worktree setup.
+        # The watcher's dispatch guard is Status == To do; writing Working at
+        # the intake node — i.e. *after* provisioning — leaves a window as long
+        # as a full clone in which a concurrent poll double-dispatches the task
+        # (the loser then collides on the worktree branch and escalates).
+        try:
+            deps.notion.update_task(resolved_id, status=STATUS_WORKING)
+        except Exception as exc:  # noqa: BLE001 - claim is best-effort
+            logger.warning("Could not claim task %s: %s", resolved_id, exc)
         try:
             with _provision_worktree(resolved_settings, deps.notion, resolved_id) as wt:
                 deps.worktree_for = lambda _s: wt
@@ -301,7 +339,34 @@ def run_task(
             # isn't a crash, it's a task that needs a human: escalate gracefully.
             return _escalate_unbuildable(deps, resolved_id, raw_request, str(exc))
 
+    # A CLI-sourced task with an explicit --repo gets the same clone-per-task
+    # worktree, resolved directly (no Notion). A bad repo argument raises — the
+    # operator is at the terminal, so fail fast rather than escalate.
+    if source == "cli" and repo is not None:
+        from stromboli.sandbox.runner import WorktreeManager
+
+        manager = WorktreeManager(
+            resolved_settings.workspace_root, token=resolved_settings.github_token
+        )
+        with manager.worktree(_parse_repo_arg(repo), resolved_id, raw_request) as wt:
+            deps.worktree_for = lambda _s: wt
+            return _execute(deps, resolved_id, raw_request, source, checkpointer)
+
     return _execute(deps, resolved_id, raw_request, source, checkpointer)
+
+
+def _parse_repo_arg(arg: str) -> Repo:
+    """``--repo``: a local path (cloned directly) or a GitHub ``owner/name``."""
+    path = Path(arg).expanduser()
+    if path.exists():
+        resolved = path.resolve()
+        return Repo(owner="local", repo=resolved.name, source=str(resolved))
+    owner, sep, name = arg.partition("/")
+    if sep and owner and name and "/" not in name:
+        return Repo(owner=owner, repo=name.removesuffix(".git"))
+    raise ValueError(
+        f"--repo must be an existing local path or 'owner/name', got {arg!r}"
+    )
 
 
 def _escalate_unbuildable(
@@ -376,7 +441,8 @@ def _finalize(state: StromboliState, deps: GraphDeps) -> None:
     """Terminal I/O for a completed task: Notion write-back + Telegram (PRD §6.7)."""
     if state.status != "done":
         return
-    if deps.notion is not None:
+    # Only a Notion-sourced task has a page to write back to.
+    if deps.notion is not None and state.source == "notion":
         summary = build_feedback_summary(
             status="done",
             pr_url=state.pr_url,

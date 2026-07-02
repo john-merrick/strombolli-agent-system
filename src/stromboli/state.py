@@ -82,6 +82,10 @@ class StromboliState(BaseModel):
     inner_iterations: int = 0
     #: The number of verifier revise edges taken (outer recursion).
     outer_iterations: int = 0
+    #: Tokens spent so far across both model surfaces (coder turns + gateway
+    #: calls). The verdict gate reads this against ``MAX_TOKENS_PER_TASK`` — the
+    #: backstop ceiling (PRD §5) — refusing another revise cycle once exceeded.
+    tokens_used: int = 0
 
     verdict: Verdict | None = None
     #: IDs of memory entries retrieved for this task (for tracing / decay).

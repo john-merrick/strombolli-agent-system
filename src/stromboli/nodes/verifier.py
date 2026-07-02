@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 
-from stromboli.llm.gateway import Gateway, GatewayError
+from stromboli.llm.gateway import Gateway, GatewayError, usage_tokens
 from stromboli.nodes.intake import Node
 from stromboli.state import StromboliState, TestResult, Verdict
 
@@ -71,7 +71,12 @@ def make_verifier(gateway: Gateway | None = None, *, model: str | None = None) -
                 reason="verifier model call failed — needs human review",
             )
 
-        update: dict[str, object] = {"verdict": verdict, "status": "verifying"}
+        spent = usage_tokens(getattr(gateway, "last_usage", None))
+        update: dict[str, object] = {
+            "verdict": verdict,
+            "status": "verifying",
+            "tokens_used": state.tokens_used + spent,
+        }
         if verdict.decision != "pass":
             update["reflections"] = [f"{verdict.decision}: {verdict.reason}"]
         return update

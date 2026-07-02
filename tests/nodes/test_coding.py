@@ -131,3 +131,19 @@ def test_build_prompt_includes_spec_sections() -> None:
     assert "# Goal" in prompt
     assert "add --verbose" in prompt
     assert "prints debug" in prompt
+
+
+def test_coding_accumulates_coder_tokens() -> None:
+    run = CoderRun(
+        diff="d", final_text="ok", turns=2, session_id="s", subtype="success",
+        is_error=False, cost_usd=None,
+        usage={"input_tokens": 700, "output_tokens": 300},
+        turn_records=(),
+    )
+    node = make_coding(
+        FakeCoder(run),
+        FakeSandbox(SandboxResult(passed=True, output="ok", exit_code=0)),
+        lambda _s: make_worktree(),
+    )
+    out = node(_state(tokens_used=100))
+    assert out["tokens_used"] == 1_100  # prior 100 + 1_000 from the run

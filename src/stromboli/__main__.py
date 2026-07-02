@@ -51,6 +51,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["cli", "notion", "telegram"],
         help="The intake source (default: cli).",
     )
+    run.add_argument(
+        "--repo",
+        default=None,
+        help="For --source cli: the target repository the task is built in — "
+        "a local path or a GitHub 'owner/name' (required; a clone-per-task "
+        "worktree is provisioned from it).",
+    )
+    run.add_argument(
+        "--dry-run-pr",
+        action="store_true",
+        help="Log the PR intent instead of pushing and opening a real PR.",
+    )
 
     poll = sub.add_parser(
         "poll", help="Run every Ready Notion task through the graph (the front-end)."
@@ -84,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.source == "cli" and not args.task:
             print("error: --task is required for --source cli", file=sys.stderr)
             return 2
+        if args.source == "cli" and not args.repo:
+            # Fail fast: without a repo the coding node has no worktree to
+            # build in (only Notion tasks resolve one from their Project).
+            print("error: --repo is required for --source cli", file=sys.stderr)
+            return 2
         if args.source == "notion" and not args.task_id:
             print("error: --task-id is required for --source notion", file=sys.stderr)
             return 2
@@ -91,7 +108,11 @@ def main(argv: list[str] | None = None) -> int:
         from stromboli.graph import run_task
 
         final = run_task(
-            args.task, source=args.source, task_id=args.task_id
+            args.task,
+            source=args.source,
+            task_id=args.task_id,
+            repo=args.repo,
+            dry_run_pr=True if args.dry_run_pr else None,
         )
         print(f"task {final.task_id}: {final.status}")
         if final.pr_url:

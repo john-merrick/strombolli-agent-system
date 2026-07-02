@@ -92,6 +92,9 @@ class Repo:
 
     owner: str
     repo: str
+    #: Explicit clone source overriding the GitHub HTTPS URL — e.g. a local
+    #: path for a CLI-sourced task. ``None`` → clone from github.com.
+    source: str | None = None
 
     @property
     def full_name(self) -> str:

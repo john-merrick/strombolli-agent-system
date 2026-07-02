@@ -124,9 +124,38 @@ async def _user_stream(text: str) -> AsyncIterator[dict[str, Any]]:
 
 
 def _git_diff(root: Path) -> str:
-    """Default :data:`DiffFn`: the worktree's tracked changes against HEAD."""
+    """Default :data:`DiffFn`: the worktree's *whole* change against its base.
+
+    Two traps make a naive ``git diff HEAD`` read as "the coder did nothing"
+    (the verifier then revises/escalates a perfectly real change):
+
+    * the agent may **commit** its work (it has Bash) — diff vs HEAD is then
+      empty, so diff from the branch base (merge-base with ``origin/HEAD``,
+      falling back to HEAD when there is no origin);
+    * **new files** are untracked — record them as intent-to-add first
+      (``add -N``, non-destructive).
+    """
+    subprocess.run(  # noqa: S603
+        ["git", "-C", str(root), "add", "-N", "."], capture_output=True, text=True
+    )
+    base = "HEAD"
+    merge_base = subprocess.run(  # noqa: S603
+        ["git", "-C", str(root), "merge-base", "HEAD", "origin/HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if merge_base.returncode == 0 and merge_base.stdout.strip():
+        base = merge_base.stdout.strip()
+    # Exclude bytecode junk the agent's own test runs leave behind — a target
+    # repo without a .gitignore would otherwise ship __pycache__ in the diff
+    # (and burn a verifier revise cycle on it). Git pathspec '*' crosses '/'.
     proc = subprocess.run(  # noqa: S603
-        ["git", "-C", str(root), "diff", "HEAD"], capture_output=True, text=True
+        [
+            "git", "-C", str(root), "diff", base, "--",
+            ".", ":!*__pycache__*", ":!*.pyc",
+        ],
+        capture_output=True,
+        text=True,
     )
     return proc.stdout
 
