@@ -19,7 +19,26 @@ from collections.abc import Callable
 
 from stromboli.memory import Memory
 from stromboli.nodes.intake import Node
-from stromboli.state import StromboliState
+from stromboli.state import StromboliState, Verdict
+
+
+def _lesson_from(verdict: Verdict) -> str | None:
+    """Render a durable lesson from a resolved verdict, or ``None`` if it carries
+    no divergence (a clean pass — nothing was learned)."""
+    if not (verdict.cause or verdict.fix):
+        return None
+    tt = verdict.task_type or "task"
+    fm = verdict.failure_mode or "issue"
+    parts = [f"When {tt} and {fm}:"]
+    if verdict.expected:
+        parts.append(f"expected {verdict.expected},")
+    if verdict.observed:
+        parts.append(f"but {verdict.observed};")
+    if verdict.cause:
+        parts.append(f"cause: {verdict.cause};")
+    if verdict.fix:
+        parts.append(f"fix: {verdict.fix}.")
+    return " ".join(parts)
 
 
 def make_memory_write(
@@ -41,11 +60,26 @@ def make_memory_write(
                 )
             )
 
-        passed = state.verdict is not None and state.verdict.decision == "pass"
-        if passed:
+        verdict = state.verdict
+        if verdict is not None and verdict.decision == "pass":
             goal = state.spec.goal if state.spec else state.raw_request
             summary = f"Task {state.task_id}: {goal} — shipped (PR opened)."
             written.append(memory.episodic.record_trace(state.task_id, summary, ts=ts))
+            # Distill a durable lesson only from a resolved run that actually
+            # diverged (has a validated fix) — the cross-episode weight update
+            # (design: docs/design-context-as-state.md). A clean first-pass pass
+            # has empty surprise fields → nothing was learned → no lesson.
+            lesson = _lesson_from(verdict)
+            if lesson is not None:
+                written.append(
+                    memory.episodic.record_lesson(
+                        state.task_id,
+                        lesson,
+                        task_type=verdict.task_type,
+                        failure_mode=verdict.failure_mode,
+                        ts=ts,
+                    )
+                )
 
         return {"status": "done", "memory_refs": [*state.memory_refs, *written]}
 

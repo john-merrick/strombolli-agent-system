@@ -12,6 +12,7 @@ With no gateway it falls back to a spec-derived prompt (offline/tests).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from stromboli.llm.gateway import Gateway, GatewayError, usage_tokens
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 #: The Notion property the generated prompt is written to (PRD trace point).
 DEFAULT_PROMPT_PROP = "Prompt"
+#: Retrieves distilled lessons relevant to a task goal (design: context-as-state).
+LessonRetriever = Callable[[str], Sequence[str]]
 
 _SYSTEM = (
     "You translate a build specification into a single, precise, self-contained "
@@ -55,17 +58,41 @@ def _spec_block(spec: Spec | None, raw: str) -> str:
     return "\n\n".join(parts)
 
 
+def _lessons_block(retriever: LessonRetriever | None, goal: str) -> str:
+    """The retrieved-lessons context prepended to the planner input, or ""."""
+    if retriever is None:
+        return ""
+    lessons = list(retriever(goal))
+    if not lessons:
+        return ""
+    body = "\n".join(f"- {lesson}" for lesson in lessons)
+    return (
+        "Lessons from past similar tasks (apply where relevant, don't repeat "
+        f"these mistakes):\n{body}"
+    )
+
+
 def make_prompt(
     gateway: Gateway | None = None,
     *,
     model: str | None = None,
     notion: PromptNotion | None = None,
     prop_name: str = DEFAULT_PROMPT_PROP,
+    retriever: LessonRetriever | None = None,
 ) -> Node:
-    """Build the prompt node. With no ``gateway`` it returns a spec-derived stub."""
+    """Build the prompt node. With no ``gateway`` it returns a spec-derived stub.
+
+    When ``retriever`` is wired, distilled lessons from past similar tasks are
+    injected into the planner's context (design: docs/design-context-as-state.md)
+    — the cross-episode signal landing closest to where instructions are authored.
+    """
 
     def prompt(state: StromboliState) -> dict[str, object]:
+        goal = state.spec.goal if state.spec is not None else state.raw_request
+        lessons = _lessons_block(retriever, goal)
         spec_text = _spec_block(state.spec, state.raw_request)
+        if lessons:
+            spec_text = f"{lessons}\n\n{spec_text}"
         spent = 0
         if gateway is None or model is None:
             generated = spec_text
@@ -91,4 +118,4 @@ def make_prompt(
     return prompt
 
 
-__all__ = ["DEFAULT_PROMPT_PROP", "PromptNotion", "make_prompt"]
+__all__ = ["DEFAULT_PROMPT_PROP", "LessonRetriever", "PromptNotion", "make_prompt"]

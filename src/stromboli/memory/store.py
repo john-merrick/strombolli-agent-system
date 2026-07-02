@@ -70,9 +70,23 @@ class MemoryStore:
             ids=[id], documents=[document], metadatas=[meta]
         )
 
-    def query(self, tier: str, *, text: str, k: int = 3) -> list[MemoryHit]:
-        """Return up to top-``k`` entries in ``tier`` nearest to ``text``."""
-        result = self._collection(tier).query(query_texts=[text], n_results=k)
+    def query(
+        self,
+        tier: str,
+        *,
+        text: str,
+        k: int = 3,
+        where: dict[str, Any] | None = None,
+    ) -> list[MemoryHit]:
+        """Return up to top-``k`` entries in ``tier`` nearest to ``text``.
+
+        ``where`` is an optional metadata equality filter (e.g.
+        ``{"kind": "lesson"}``) applied by the backing store.
+        """
+        kwargs: dict[str, Any] = {"query_texts": [text], "n_results": k}
+        if where is not None:
+            kwargs["where"] = where
+        result = self._collection(tier).query(**kwargs)
         ids = (result.get("ids") or [[]])[0]
         docs = (result.get("documents") or [[]])[0]
         metas = (result.get("metadatas") or [[]])[0]

@@ -29,15 +29,23 @@ class Memory:
         self.procedural = ProceduralMemory(self.store)
 
     def recall_for_spec(self, query: str, *, k: int = 3) -> list[str]:
-        """Top-k episodic + semantic snippets to seed the Spec node (§6.2/§7).
+        """Top-k semantic snippets to seed the Spec node (§6.2/§7).
 
         Small and bounded — never the whole store (retrieve, don't accumulate).
+        Distilled lessons are recalled at the *planner* instead (see
+        :meth:`recall_lessons`), so Spec carries only repo conventions.
         """
-        hits: list[MemoryHit] = [
-            *self.episodic.recall(query, k=k),
-            *self.semantic.recall(query, k=k),
-        ]
+        hits: list[MemoryHit] = list(self.semantic.recall(query, k=k))
         return [h.document for h in hits]
+
+    def recall_lessons(self, query: str, *, k: int = 3) -> list[str]:
+        """Top-k distilled lessons for the planner (design: context-as-state).
+
+        Filtered to ``kind="lesson"`` so the planner sees validated remedies
+        ("fix that worked"), not raw traces — the sharp, decision-relevant
+        signal injected at the start of a matching future run.
+        """
+        return [h.document for h in self.episodic.recall_lessons(query, k=k)]
 
     @classmethod
     def open(cls, persist_dir: str | Path | None = None) -> Memory:

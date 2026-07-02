@@ -28,7 +28,20 @@ _SYSTEM = (
     "whether tests are green: decide whether the change actually satisfies every "
     "acceptance criterion, and whether the tests genuinely cover them (flag "
     "hollow or tautological tests). Decide pass (ships), revise (fixable — say "
-    "exactly what to fix), or escalate (needs a human). Be specific in 'reason'."
+    "exactly what to fix), or escalate (needs a human). Be specific in 'reason'.\n\n"
+    "Also record the *surprise* — the divergence between plan and outcome — as "
+    "compact, decision-relevant signal (not a log):\n"
+    "- expected: what the spec/plan intended.\n"
+    "- observed: what the diff + tests actually produced.\n"
+    "- cause: why they diverged (the root cause, one line).\n"
+    "- fix: the concrete corrective the next attempt should apply (imperative). "
+    "This is the most important field — it must be actionable, not a restatement "
+    "of the problem.\n"
+    "- task_type: a short slug for the kind of task (e.g. add-endpoint, bugfix, "
+    "refactor, add-tests).\n"
+    "- failure_mode: a short slug for how it fell short (e.g. missing-tests, "
+    "empty-diff, wrong-api, incomplete, regression). \n"
+    "On a clean pass with no divergence, leave these fields empty."
 )
 
 

@@ -147,3 +147,27 @@ def test_coding_accumulates_coder_tokens() -> None:
     )
     out = node(_state(tokens_used=100))
     assert out["tokens_used"] == 1_100  # prior 100 + 1_000 from the run
+
+
+def test_revise_feedback_renders_structured_surprise() -> None:
+    from stromboli.nodes.coding import _build_prompt
+
+    verdict = Verdict(
+        decision="revise", reason="fix it",
+        expected="a passing test", observed="an empty diff",
+        cause="the coder committed nothing", fix="write calc.subtract and its test",
+    )
+    state = _state(verdict=verdict, plan="build subtract")
+    prompt = _build_prompt(state)
+    assert "What diverged" in prompt
+    assert "Expected: a passing test" in prompt
+    assert "Do this:  write calc.subtract and its test" in prompt
+
+
+def test_revise_feedback_falls_back_to_reason_when_unstructured() -> None:
+    from stromboli.nodes.coding import _build_prompt
+
+    verdict = Verdict(decision="revise", reason="the naming is off")
+    state = _state(verdict=verdict, plan="build it")
+    prompt = _build_prompt(state)
+    assert "Reviewer feedback" in prompt and "the naming is off" in prompt

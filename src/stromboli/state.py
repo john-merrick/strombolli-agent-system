@@ -52,12 +52,32 @@ class Spec(BaseModel):
 
 
 class Verdict(BaseModel):
-    """The verifier's structured judgment of the diff (PRD §6.5)."""
+    """The verifier's structured judgment of the diff (PRD §6.5).
+
+    The ``expected/observed/cause/fix`` fields are the *compressed surprise*
+    (design: docs/design-context-as-state.md): within an episode they are the
+    directive delta injected into the next coder pass; across episodes a
+    resolved-with-divergence verdict is distilled into a durable lesson, tagged
+    by ``task_type``/``failure_mode``. All default ``""`` so a bare pass (no
+    divergence) and every legacy caller stay valid.
+    """
 
     decision: Decision
     reason: str
     #: Did the tests actually cover what the spec cared about?
     coverage_note: str = ""
+    #: What the plan/spec intended (the "expected" half of the surprise).
+    expected: str = ""
+    #: What the diff + tests actually produced (the "observed" half).
+    observed: str = ""
+    #: Why expected and observed diverged (the root cause).
+    cause: str = ""
+    #: The concrete corrective the next pass should apply — the validated remedy.
+    fix: str = ""
+    #: Short slug for the kind of task (e.g. "add-endpoint", "bugfix").
+    task_type: str = ""
+    #: Short slug for how it failed (e.g. "missing-tests", "empty-diff").
+    failure_mode: str = ""
 
 
 class StromboliState(BaseModel):

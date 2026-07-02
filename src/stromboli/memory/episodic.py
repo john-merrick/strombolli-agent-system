@@ -39,8 +39,44 @@ class EpisodicMemory:
         )
         return entry_id
 
+    def record_lesson(
+        self,
+        task_id: str,
+        lesson: str,
+        *,
+        task_type: str,
+        failure_mode: str,
+        ts: float,
+    ) -> str:
+        """A distilled, validated lesson (design: docs/design-context-as-state.md).
+
+        Tagged ``kind="lesson"`` so retrieval targets remedies, not raw traces,
+        and ``task_type``/``failure_mode`` for optional filtered recall. Written
+        only from a resolved-with-divergence run, so ``lesson`` carries a fix
+        that provably worked.
+        """
+        entry_id = f"{task_id}:lesson"
+        self._store.add(
+            EPISODIC,
+            id=entry_id,
+            document=lesson,
+            metadata={
+                "task_id": task_id,
+                "kind": "lesson",
+                "task_type": task_type,
+                "failure_mode": failure_mode,
+                "resolved": True,
+                "ts": ts,
+            },
+        )
+        return entry_id
+
     def recall(self, query: str, *, k: int = 3) -> Sequence[MemoryHit]:
         return self._store.query(EPISODIC, text=query, k=k)
+
+    def recall_lessons(self, query: str, *, k: int = 3) -> Sequence[MemoryHit]:
+        """Top-k distilled lessons (``kind="lesson"``) for a task goal."""
+        return self._store.query(EPISODIC, text=query, k=k, where={"kind": "lesson"})
 
 
 __all__ = ["EpisodicMemory"]

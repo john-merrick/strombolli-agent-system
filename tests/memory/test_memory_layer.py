@@ -24,12 +24,26 @@ def test_episodic_recall_finds_relevant_reflection() -> None:
     assert "pagination" in hits[0].document
 
 
-def test_recall_for_spec_pulls_episodic_and_semantic() -> None:
+def test_recall_for_spec_pulls_semantic_conventions() -> None:
+    # Spec recall now carries only repo conventions; distilled lessons moved to
+    # the planner (recall_lessons). See docs/design-context-as-state.md.
     mem = _memory()
-    mem.episodic.record_reflection("t1", "watch out for off by one in ranges", ts=1.0)
     mem.semantic.add_convention("style", "always use snake_case for functions")
-    snippets = mem.recall_for_spec("range off by one", k=2)
-    assert any("off by one" in s for s in snippets)
+    snippets = mem.recall_for_spec("naming style", k=2)
+    assert any("snake_case" in s for s in snippets)
+
+
+def test_recall_lessons_filters_to_lesson_kind() -> None:
+    mem = _memory()
+    mem.episodic.record_lesson(
+        "t1", "When bugfix and off-by-one: fix the range bound.",
+        task_type="bugfix", failure_mode="off-by-one", ts=1.0,
+    )
+    # A trace on the same topic must NOT surface via recall_lessons.
+    mem.episodic.record_trace("t2", "shipped an off-by-one range change", ts=2.0)
+    lessons = mem.recall_lessons("off by one range", k=3)
+    assert any("fix the range bound" in lesson for lesson in lessons)
+    assert not any("shipped" in lesson for lesson in lessons)
 
 
 def test_recall_is_bounded_by_k() -> None:

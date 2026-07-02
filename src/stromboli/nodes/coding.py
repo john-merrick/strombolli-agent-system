@@ -23,7 +23,7 @@ from stromboli.llm.gateway import usage_tokens
 from stromboli.nodes.intake import Node
 from stromboli.observability.tracing import BuildTracer, NullTracer, traced_node
 from stromboli.sandbox.runner import DEFAULT_TEST_COMMAND, TestSandbox, Worktree
-from stromboli.state import StromboliState, TestResult
+from stromboli.state import StromboliState, TestResult, Verdict
 
 #: Resolves the prepared worktree for a task (clone-per-task, PRD §11.4). The
 #: same worktree is returned across the coding/PR nodes of one task run.
@@ -44,12 +44,33 @@ def _build_prompt(state: StromboliState) -> str:
         parts.append(_spec_prompt(state))
 
     if state.verdict is not None and state.verdict.decision == "revise":
-        parts.append(f"# Reviewer feedback (address this)\n{state.verdict.reason}")
+        parts.append(_revise_feedback(state.verdict))
     parts.append(
         "Implement the change in this repository and make the tests pass. Run the "
         "tests yourself to verify before finishing."
     )
     return "\n\n".join(parts)
+
+
+def _revise_feedback(verdict: Verdict) -> str:
+    """The compressed-surprise delta injected on a revise (design: context-as-state).
+
+    Prefer the structured Expected/Observed/Cause/Do-this block — a directive
+    correction the coder can act on without re-exploring — and fall back to the
+    free-text ``reason`` when the verifier left the structured fields empty.
+    """
+    if verdict.cause or verdict.fix or verdict.expected or verdict.observed:
+        lines = ["# What diverged (address this, don't re-explore)"]
+        if verdict.expected:
+            lines.append(f"Expected: {verdict.expected}")
+        if verdict.observed:
+            lines.append(f"Observed: {verdict.observed}")
+        if verdict.cause:
+            lines.append(f"Cause:    {verdict.cause}")
+        # The fix is the actionable payload; always show something to do.
+        lines.append(f"Do this:  {verdict.fix or verdict.reason}")
+        return "\n".join(lines)
+    return f"# Reviewer feedback (address this)\n{verdict.reason}"
 
 
 def _spec_prompt(state: StromboliState) -> str:

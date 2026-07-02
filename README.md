@@ -167,3 +167,19 @@ Three per-node eval datasets live in `evals/datasets/` — `spec_eval`,
 `coding_eval`, and `verifier_eval` (the most important) — scored against
 thresholds and gated in CI
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+
+## Learning — context as the only mutable state
+
+A frozen-weight system can't learn in weights, so Stromboli treats **context** as
+its mutable state, on two layers
+([`docs/design-context-as-state.md`](docs/design-context-as-state.md)):
+
+- **Within a run** (the revise cycle) the verifier emits *compressed surprise* —
+  expected X / observed Y / cause Z / **fix** — and only that directive delta is
+  injected into the next coder pass, instead of a prose reason. Less
+  re-exploration per revise.
+- **Across runs**, a resolved-with-divergence verdict is distilled into a durable
+  **lesson** (ChromaDB episodic, tagged `task_type`/`failure_mode`, carrying a
+  validated fix) and retrieved into the **planner's** context at the start of a
+  matching future task. Curate-and-compress within, distill-and-retrieve across —
+  the closest a frozen model gets to a test-time update.

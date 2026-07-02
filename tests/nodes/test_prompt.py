@@ -43,3 +43,31 @@ def test_gateway_failure_falls_back_to_spec_text() -> None:
     gw = FakeGateway(error=GatewayError("down"))
     out = make_prompt(gw, model="m", notion=FakeNotion())(_state())
     assert isinstance(out["plan"], str) and "dedupe feed sources" in out["plan"]
+
+
+def test_planner_injects_retrieved_lessons() -> None:
+    from stromboli.nodes.prompt import make_prompt
+    from stromboli.state import Spec, StromboliState
+    from tests.nodes._fakes import FakeGateway
+
+    gw = FakeGateway({})
+    lessons = ["When bugfix and off-by-one: fix the range bound."]
+    node = make_prompt(gw, model="flash", retriever=lambda _g: lessons)
+    node(StromboliState(
+        task_id="t", source="cli", raw_request="fix the loop",
+        spec=Spec(goal="fix the off-by-one loop"),
+    ))
+    assert "fix the range bound" in gw.calls[0]["user"]
+
+
+def test_planner_without_retriever_injects_nothing() -> None:
+    from stromboli.nodes.prompt import make_prompt
+    from stromboli.state import Spec, StromboliState
+    from tests.nodes._fakes import FakeGateway
+
+    gw = FakeGateway({})
+    node = make_prompt(gw, model="flash")
+    node(StromboliState(
+        task_id="t", source="cli", raw_request="do x", spec=Spec(goal="do x"),
+    ))
+    assert "Lessons from past" not in gw.calls[0]["user"]
